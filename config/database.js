@@ -21,7 +21,7 @@
 const { Sequelize } = require('sequelize');
 
 // حط اللينك بتاعك هنا (تأكد إنك كتبت الباسورد الحقيقية مكان [YOUR-PASSWORD])
-const connectionString = 'postgresql://postgres:[Yooseff77)($)(@))si]@db.zpznjjyqldxwfnklkvgh.supabase.co:5432/postgres';
+const connectionString = SUPABASE_DATABASE_URL;
 
 const sequelize = new Sequelize(connectionString, {
   dialect: 'postgres',
