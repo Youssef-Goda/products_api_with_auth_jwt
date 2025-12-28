@@ -18,10 +18,13 @@
 // });
 
 // module.exports = sequelize;
+
+
+
 const { Sequelize } = require('sequelize');
 
-// حط اللينك بتاعك هنا (تأكد إنك كتبت الباسورد الحقيقية مكان [YOUR-PASSWORD])
-const connectionString = SUPABASE_DATABASE_URL;
+// هنا بنخلي الكود يقرأ من البيئة المحيطة (Vercel) أو يستخدم اللينك المباشر كخيار احتياطي
+const connectionString = process.env.DATABASE_URL || 'postgresql://postgres:[Yooseff77)($)(@))si]@db.zpznjjyqldxwfnklkvgh.supabase.co:5432/postgres';
 
 const sequelize = new Sequelize(connectionString, {
   dialect: 'postgres',
@@ -29,7 +32,7 @@ const sequelize = new Sequelize(connectionString, {
   dialectOptions: {
     ssl: {
       require: true,
-      rejectUnauthorized: false // ضروري جداً عشان الربط ينجح مع Vercel و Supabase
+      rejectUnauthorized: false // ضروري جداً للربط بين Vercel و Supabase
     }
   },
   pool: {
