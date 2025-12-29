@@ -30,12 +30,51 @@ router.post('/register', async (req, res) => {
     }
 });
 
+// // 2. ========================= Verify OTP (Register) =========================
+// router.post('/verify-otp', async (req, res) => {
+//     const { email, otp } = req.body;
+//     const t = await sequelize.transaction();
+//     try {
+//         const pendingUser = await PendingUser.findOne({ where: { email } }, { transaction: t });
+//         if (!pendingUser || pendingUser.otp !== otp || Date.now() > pendingUser.otpExpiry) {
+//             await t.rollback();
+//             return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP' });
+//         }
+
+//         const newUser = await User.create({
+//             firstName: pendingUser.firstName,
+//             lastName: pendingUser.lastName,
+//             email: pendingUser.email,
+//             password: pendingUser.password
+//         }, { transaction: t });
+
+//         const accessToken = generateAccessToken(newUser);
+//         const refreshToken = generateRefreshToken(newUser);
+//         newUser.refreshToken = refreshToken;
+//         await newUser.save({ transaction: t });
+//         await pendingUser.destroy({ transaction: t });
+
+//         await t.commit();
+//         sendOTP(newUser.email, '', 'welcome').catch(e => console.log("Welcome Email Error"));
+
+//         res.json({ 
+//             status: 'success', accessToken, refreshToken, 
+//             user: { id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName, email: newUser.email } 
+//         });
+//     } catch (err) {
+//         if (t) await t.rollback();
+//         res.status(500).json({ status: 'error', message: 'Server error' });
+//     }
+// });
+
+
 // 2. ========================= Verify OTP (Register) =========================
 router.post('/verify-otp', async (req, res) => {
     const { email, otp } = req.body;
     const t = await sequelize.transaction();
     try {
         const pendingUser = await PendingUser.findOne({ where: { email } }, { transaction: t });
+        
         if (!pendingUser || pendingUser.otp !== otp || Date.now() > pendingUser.otpExpiry) {
             await t.rollback();
             return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP' });
@@ -51,21 +90,39 @@ router.post('/verify-otp', async (req, res) => {
         const accessToken = generateAccessToken(newUser);
         const refreshToken = generateRefreshToken(newUser);
         newUser.refreshToken = refreshToken;
+        
         await newUser.save({ transaction: t });
         await pendingUser.destroy({ transaction: t });
 
+        // لازم الـ commit يحصل قبل إرسال الإيميل عشان نضمن إن البيانات اتحفظت
         await t.commit();
-        sendOTP(newUser.email, '', 'welcome').catch(e => console.log("Welcome Email Error"));
 
+        // التعديل الجوهري هنا: زودنا await
+        // كدة السيرفر هيستنى الإيميل يخرج لـ Brevo قبل ما يرد على فلاتر
+        try {
+            await sendOTP(newUser.email, '', 'welcome');
+            console.log("✅ Welcome Email Sent Successfully");
+        } catch (e) {
+            console.log("⚠️ Welcome Email Error (but user is verified):", e.message);
+        }
+
+        // الرد على فلاتر هو آخر خطوة خالص
         res.json({ 
-            status: 'success', accessToken, refreshToken, 
+            status: 'success', 
+            accessToken, 
+            refreshToken, 
             user: { id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName, email: newUser.email } 
         });
+
     } catch (err) {
-        if (t) await t.rollback();
+        // لو حصل خطأ والـ Transaction لسه مفتوحة، اقفلها
+        if (t && !t.finished) await t.rollback();
+        console.error("❌ Verify Error:", err);
         res.status(500).json({ status: 'error', message: 'Server error' });
     }
 });
+
+
 
 // 3. ========================= Login =========================
 router.post('/login', async (req, res) => {
