@@ -20,26 +20,17 @@
 // module.exports = sequelize;
 
 
-
 const { Sequelize } = require('sequelize');
+const pg = require('pg'); 
 
-// هنا بنخلي الكود يقرأ من البيئة المحيطة (Vercel) أو يستخدم اللينك المباشر كخيار احتياطي
-const connectionString = process.env.SUPABASE_DATABASE_URL || 'postgresql://postgres:UYdpQgcnKh2Zl7m6@db.zpznjjyqldxwfnklkvgh.supabase.co:5432/postgres';
-
-const sequelize = new Sequelize(connectionString, {
+const sequelize = new Sequelize(process.env.SUPABASE_DATABASE_URL, {
   dialect: 'postgres',
-  protocol: 'postgres',
+  dialectModule: pg, // السطر ده هو اللي هيحل مشكلة "Please install pg"
   dialectOptions: {
     ssl: {
       require: true,
-      rejectUnauthorized: false // ضروري جداً للربط بين Vercel و Supabase
+      rejectUnauthorized: false
     }
-  },
-  pool: {
-    max: 5,
-    min: 0,
-    acquire: 30000,
-    idle: 10000
   }
 });
 
