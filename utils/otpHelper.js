@@ -180,13 +180,21 @@ const sendOTP = async (toEmail, otp, type = 'verification') => {
         `
     };
 
-    try {
-        await transporter.sendMail(mailOptions);
+// بدل الكود القديم، استخدم ده:
+try {
+    // شيلنا الـ await من هنا عشان ميعطلش الكود
+    transporter.sendMail(mailOptions).then(() => {
         console.log(`✅ Email Sent (${type})`);
-    } catch (error) {
-        console.error('❌ Email Error:', error.message);
-        throw error;
-    }
+    }).catch((err) => {
+        console.error('❌ Email Async Error:', err.message);
+    });
+
+    // كدة السيرفر هيعتبر المهمة انتهت وهيرد على فلاتر فوراً
+    return true; 
+} catch (error) {
+    console.error('❌ Setup Error:', error.message);
+    // متبعتش throw error هنا عشان ميبوظش عملية التسجيل لو الإيميل بس هو اللي فيه مشكلة
+}
 };
 
 module.exports = { sendOTP };
