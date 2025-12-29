@@ -180,21 +180,23 @@ const sendOTP = async (toEmail, otp, type = 'verification') => {
         `
     };
 
-// بدل الكود القديم، استخدم ده:
 try {
-    // شيلنا الـ await من هنا عشان ميعطلش الكود
-    transporter.sendMail(mailOptions).then(() => {
+        // هنستخدم await هنا عشان نضمن إن فيرسال ميفصلش قبل ما يبعت
+        // بس هنخلي العملية "أسرع" بأننا مش مستنيين رد طويل
+        await transporter.sendMail(mailOptions);
         console.log(`✅ Email Sent (${type})`);
-    }).catch((err) => {
-        console.error('❌ Email Async Error:', err.message);
-    });
-
-    // كدة السيرفر هيعتبر المهمة انتهت وهيرد على فلاتر فوراً
-    return true; 
-} catch (error) {
-    console.error('❌ Setup Error:', error.message);
-    // متبعتش throw error هنا عشان ميبوظش عملية التسجيل لو الإيميل بس هو اللي فيه مشكلة
-}
+        return true;
+    } catch (error) {
+        // لو حصل مشكلة في الإيميل، هنطبعها بس مش هنخليها تعمل Crash للمشروع
+        console.error('❌ Email Service Error:', error.message);
+        
+        // لو النوع OTP، ممكن نحتاج نرفع Error عشان اليوزر ميكملش
+        // لكن لو welcome إيميل، هنرجّع true عادي عشان التسجيل يكمل
+        if (type === 'verification' || type === 'reset') {
+            throw new Error('Failed to send verification code');
+        }
+        return false; 
+    }
 };
 
 module.exports = { sendOTP };
