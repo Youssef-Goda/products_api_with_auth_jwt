@@ -1,3 +1,4 @@
+require('pg'); // إجبار السيرفر على استدعاء المكتبة في أول ثانية
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors'); // 1. استيراد مكتبة الـ CORS
