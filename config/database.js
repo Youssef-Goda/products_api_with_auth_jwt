@@ -24,7 +24,7 @@
 const { Sequelize } = require('sequelize');
 
 // هنا بنخلي الكود يقرأ من البيئة المحيطة (Vercel) أو يستخدم اللينك المباشر كخيار احتياطي
-const connectionString = process.env.SUPABASE_DATABASE_URL || 'postgresql://postgres:[Yooseff77)($)(@))si]@db.zpznjjyqldxwfnklkvgh.supabase.co:5432/postgres';
+const connectionString = process.env.SUPABASE_DATABASE_URL || 'postgresql://postgres:UYdpQgcnKh2Zl7m6@db.zpznjjyqldxwfnklkvgh.supabase.co:5432/postgres';
 
 const sequelize = new Sequelize(connectionString, {
   dialect: 'postgres',
