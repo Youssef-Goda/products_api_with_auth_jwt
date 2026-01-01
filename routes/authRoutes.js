@@ -147,7 +147,7 @@ router.post('/login', async (req, res) => {
     }
 });
 
-// 4. ========================= Forgot Password (ده اللي كان ناقصك!) =========================
+// 4. ========================= Forgot Password =========================
 router.post('/forgot-password', async (req, res) => {
     const { email } = req.body;
     try {
@@ -199,7 +199,33 @@ router.post('/reset-password', async (req, res) => {
     }
 });
 
-// 6. ========================= Logout =========================
+// 6. ========================= Resend OTP =========================
+router.post('/send-otp', async (req, res) => {
+    const { email } = req.body;
+    try {
+        // بنشوف هل اليوزر لسه في قائمة الانتظار (مأكدش حسابه)؟
+        const pendingUser = await PendingUser.findOne({ where: { email } });
+        if (!pendingUser) {
+            return res.status(404).json({ status: 'error', message: 'No pending registration found' });
+        }
+
+        // توليد كود جديد وتحديث الوقت
+        const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
+        pendingUser.otp = newOtp;
+        pendingUser.otpExpiry = Date.now() + 5 * 60 * 1000; // 5 دقائق
+        await pendingUser.save();
+
+        // إرسال الإيميل
+        await sendOTP(email, newOtp, 'verify');
+
+        res.json({ status: 'success', message: 'New OTP sent to your email' });
+    } catch (err) {
+        console.error("Resend OTP Error:", err);
+        res.status(500).json({ status: 'error', message: 'Internal server error' });
+    }
+});
+
+// 7. ========================= Logout =========================
 router.post('/logout', async (req, res) => {
     const { refreshToken } = req.body;
     try {
