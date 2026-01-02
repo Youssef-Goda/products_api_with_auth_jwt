@@ -152,7 +152,7 @@ router.post('/forgot-password', async (req, res) => {
     const { email } = req.body;
     try {
         const user = await User.findOne({ where: { email } });
-        if (!user) return res.status(404).json({ status: 'error', message: 'Email not found' });
+        if (!user) return res.status(404).json({ status: 'error', message: 'Email doesn\'t exists' });
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
         await sendOTP(email, otp, 'reset'); 
