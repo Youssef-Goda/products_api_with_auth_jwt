@@ -9,19 +9,20 @@ router.get('/', async (req, res) => {
 });
 
 router.post('/', async (req, res) => {
-    const { name, description, price } = req.body;
-    const product = await Product.create({ name, description, price });
+    const { name, description, price, imageUrl } = req.body;
+    const product = await Product.create({ name, description, price, imageUrl });
     res.status(201).json(product);
 });
 
 router.put('/:id', async (req, res) => {
     const { id } = req.params;
-    const { name, description, price } = req.body;
+    const { name, description, price, imageUrl } = req.body; 
     const product = await Product.findByPk(id);
     if (!product) return res.status(404).json({ error: 'Product not found' });
-    await product.update({ name, description, price });
+    await product.update({ name, description, price, imageUrl }); 
     res.json(product);
 });
+
 
 router.delete('/:id', async (req, res) => {
     const { id } = req.params;
