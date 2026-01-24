@@ -7,7 +7,6 @@ const PendingUser = sequelize.define('PendingUser', {
         autoIncrement: true,
         primaryKey: true
     },
-    // تم حذف username وإضافة الحقول الجديدة
     firstName: {
         type: DataTypes.STRING,
         allowNull: false

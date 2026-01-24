@@ -2,7 +2,6 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database'); 
 
 const User = sequelize.define('User', {
-    // تم استبدال username بـ firstName و lastName
     firstName: { 
         type: DataTypes.STRING, 
         allowNull: false 
