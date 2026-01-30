@@ -240,4 +240,18 @@ router.post('/logout', async (req, res) => {
     }
 });
 
+// دالة جديدة للتحقق من كود النسيت باسورد فقط
+router.post('/verify-reset-otp', async (req, res) => {
+    const { email, otp } = req.body;
+    try {
+        const user = await User.findOne({ where: { email, resetOtp: otp } });
+        if (!user || Date.now() > user.resetOtpExpiry) {
+            return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP' });
+        }
+        res.json({ status: 'success', message: 'OTP is valid' });
+    } catch (err) {
+        res.status(500).json({ status: 'error', message: 'Server error' });
+    }
+});
+
 module.exports = router;
