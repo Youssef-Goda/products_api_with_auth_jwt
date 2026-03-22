@@ -1,6 +1,6 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
-const sequelize = require('../config/database'); // السطر ده المتصلح
+const sequelize = require('../config/database');
 const User = require('../models/User');
 const PendingUser = require('../models/PendingUser');
 const { generateAccessToken, generateRefreshToken } = require('../utils/generateTokens');
@@ -12,7 +12,9 @@ router.post('/register', async (req, res) => {
     const { firstName, lastName, email, password } = req.body;
     try {
         const existingUser = await User.findOne({ where: { email } });
-        if (existingUser) return res.status(400).json({ status: 'error', message: 'Email already exists' });
+        if (existingUser) {
+            return res.status(400).json({ success: false, message: 'Email already exists' });
+        }
 
         await PendingUser.destroy({ where: { email } });
         const hashedPassword = await bcrypt.hash(password, 10);
@@ -23,10 +25,10 @@ router.post('/register', async (req, res) => {
             otp, otpExpiry: Date.now() + 5 * 60 * 1000
         });
 
-        await sendOTP(email, otp, 'verify'); 
-        res.status(200).json({ status: 'success', message: 'OTP Sent', email });
+        await sendOTP(email, otp, 'verify');
+        res.status(200).json({ success: true, message: 'OTP Sent', email });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Internal Server Error' });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
@@ -36,31 +38,29 @@ router.post('/verify-otp', async (req, res) => {
     const t = await sequelize.transaction();
     try {
         const pendingUser = await PendingUser.findOne({ where: { email } }, { transaction: t });
-        
+
         if (!pendingUser || pendingUser.otp !== otp || Date.now() > pendingUser.otpExpiry) {
             await t.rollback();
-            return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP' });
+            return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
         }
 
         const newUser = await User.create({
             firstName: pendingUser.firstName,
             lastName: pendingUser.lastName,
             email: pendingUser.email,
-            password: pendingUser.password
+            password: pendingUser.password,
+            role: 'user'
         }, { transaction: t });
 
         const accessToken = generateAccessToken(newUser);
         const refreshToken = generateRefreshToken(newUser);
         newUser.refreshToken = refreshToken;
-        
+
         await newUser.save({ transaction: t });
         await pendingUser.destroy({ transaction: t });
 
-        // لازم الـ commit يحصل قبل إرسال الإيميل عشان نضمن إن البيانات اتحفظت
         await t.commit();
 
-        // التعديل الجوهري هنا: زودنا await
-        // كدة السيرفر هيستنى الإيميل يخرج لـ Brevo قبل ما يرد على فلاتر
         try {
             await sendOTP(newUser.email, '', 'welcome');
             console.log("✅ Welcome Email Sent Successfully");
@@ -68,31 +68,33 @@ router.post('/verify-otp', async (req, res) => {
             console.log("⚠️ Welcome Email Error (but user is verified):", e.message);
         }
 
-        // الرد على فلاتر هو آخر خطوة خالص
-        res.json({ 
-            status: 'success', 
-            accessToken, 
-            refreshToken, 
-            user: { id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName, email: newUser.email } 
+        res.json({
+            success: true,
+            accessToken,
+            refreshToken,
+            user: { id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName, email: newUser.email }
         });
 
     } catch (err) {
-        // لو حصل خطأ والـ Transaction لسه مفتوحة، اقفلها
         if (t && !t.finished) await t.rollback();
         console.error("❌ Verify Error:", err);
-        res.status(500).json({ status: 'error', message: 'Server error' });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
-
-
 // 3. ========================= Login =========================
 router.post('/login', async (req, res) => {
-    const { email, password } = req.body; 
+    const { email, password } = req.body;
     try {
         const user = await User.findOne({ where: { email } });
+
+        // Google User Guard: email exists but password is NULL (Google sign-up)
+        if (user && user.password === null) {
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });
+        }
+
         if (!user || !(await bcrypt.compare(password, user.password))) {
-            return res.status(401).json({ status: 'error', message: 'Invalid credentials' });
+            return res.status(401).json({ success: false, message: 'Invalid credentials' });
         }
 
         const accessToken = generateAccessToken(user);
@@ -100,12 +102,12 @@ router.post('/login', async (req, res) => {
         user.refreshToken = refreshToken;
         await user.save();
 
-        res.json({ 
-            status: 'success', accessToken, refreshToken, 
-            user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email } 
+        res.json({
+            success: true, accessToken, refreshToken,
+            user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email }
         });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Server error' });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
@@ -114,18 +116,25 @@ router.post('/forgot-password', async (req, res) => {
     const { email } = req.body;
     try {
         const user = await User.findOne({ where: { email } });
-        if (!user) return res.status(404).json({ status: 'error', message: 'Email doesn\'t exists' });
+        if (!user) {
+            return res.status(404).json({ success: false, message: "Email doesn't exist" });
+        }
+
+        // Google User Guard: email exists but password is NULL (Google sign-up)
+        if (user.password === null) {
+            return res.status(400).json({ success: false, message: 'Invalid request' });
+        }
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        await sendOTP(email, otp, 'reset'); 
+        await sendOTP(email, otp, 'reset');
 
         user.resetOtp = otp;
         user.resetOtpExpiry = Date.now() + 10 * 60 * 1000;
         await user.save();
 
-        res.json({ status: 'success', message: 'Reset OTP sent' });
+        res.json({ success: true, message: 'Reset OTP sent' });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Server error' });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
@@ -135,11 +144,13 @@ router.post('/reset-password', async (req, res) => {
     try {
         const user = await User.findOne({ where: { email, resetOtp: otp } });
         if (!user || user.resetOtp !== otp || Date.now() > user.resetOtpExpiry) {
-            return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP' });
+            return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
         }
 
         const isSamePassword = await bcrypt.compare(newPassword, user.password);
-        if (isSamePassword) return res.status(400).json({ status: 'error', message: 'New password cannot be the same as old' });
+        if (isSamePassword) {
+            return res.status(400).json({ success: false, message: 'New password cannot be the same as old' });
+        }
 
         user.password = await bcrypt.hash(newPassword, 10);
         user.resetOtp = null;
@@ -152,12 +163,12 @@ router.post('/reset-password', async (req, res) => {
 
         sendOTP(email, '', 'reset_success').catch(e => console.log("Confirmation Email Error"));
 
-        res.json({ 
-            status: 'success', accessToken, refreshToken,
+        res.json({
+            success: true, accessToken, refreshToken,
             user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email }
         });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Server error' });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
@@ -165,25 +176,22 @@ router.post('/reset-password', async (req, res) => {
 router.post('/send-otp', async (req, res) => {
     const { email } = req.body;
     try {
-        // بنشوف هل اليوزر لسه في قائمة الانتظار (مأكدش حسابه)؟
         const pendingUser = await PendingUser.findOne({ where: { email } });
         if (!pendingUser) {
-            return res.status(404).json({ status: 'error', message: 'No pending registration found' });
+            return res.status(404).json({ success: false, message: 'No pending registration found' });
         }
 
-        // توليد كود جديد وتحديث الوقت
         const newOtp = Math.floor(100000 + Math.random() * 900000).toString();
         pendingUser.otp = newOtp;
-        pendingUser.otpExpiry = Date.now() + 5 * 60 * 1000; // 5 دقائق
+        pendingUser.otpExpiry = Date.now() + 5 * 60 * 1000;
         await pendingUser.save();
 
-        // إرسال الإيميل
         await sendOTP(email, newOtp, 'verify');
 
-        res.json({ status: 'success', message: 'New OTP sent to your email' });
+        res.json({ success: true, message: 'New OTP sent to your email' });
     } catch (err) {
         console.error("Resend OTP Error:", err);
-        res.status(500).json({ status: 'error', message: 'Internal server error' });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
@@ -196,23 +204,23 @@ router.post('/logout', async (req, res) => {
             user.refreshToken = null;
             await user.save();
         }
-        res.json({ status: 'success', message: 'Logged out' });
+        res.json({ success: true, message: 'Logged out' });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Server error' });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 
-// دالة جديدة للتحقق من كود النسيت باسورد فقط
+// 8. ========================= Verify Reset OTP =========================
 router.post('/verify-reset-otp', async (req, res) => {
     const { email, otp } = req.body;
     try {
         const user = await User.findOne({ where: { email, resetOtp: otp } });
         if (!user || Date.now() > user.resetOtpExpiry) {
-            return res.status(400).json({ status: 'error', message: 'Invalid or expired OTP' });
+            return res.status(400).json({ success: false, message: 'Invalid or expired OTP' });
         }
-        res.json({ status: 'success', message: 'OTP is valid' });
+        res.json({ success: true, message: 'OTP is valid' });
     } catch (err) {
-        res.status(500).json({ status: 'error', message: 'Server error' });
+        res.status(500).json({ success: false, message: err.message });
     }
 });
 

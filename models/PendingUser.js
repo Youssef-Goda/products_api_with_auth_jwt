@@ -1,10 +1,10 @@
-const { DataTypes, Op } = require('sequelize');
+const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
 const PendingUser = sequelize.define('PendingUser', {
     id: {
-        type: DataTypes.INTEGER,
-        autoIncrement: true,
+        type: DataTypes.UUID,
+        defaultValue: DataTypes.UUIDV4,
         primaryKey: true
     },
     firstName: {
@@ -32,20 +32,17 @@ const PendingUser = sequelize.define('PendingUser', {
         allowNull: true
     },
     otpExpiry: {
-        type: DataTypes.BIGINT, // يفضل BIGINT للتعامل مع Date.now() بسهولة
+        type: DataTypes.BIGINT,
         allowNull: true
     }
 }, {
     tableName: 'pending_users',
-    timestamps: true 
+    timestamps: true
 });
 
-// ===================== دالة مساعدة =====================
-// عدلنا الدالة عشان تبحث بالإيميل فقط بما إننا لغينا الـ Username
-PendingUser.cleanupExisting = async function(email) {
-    const existing = await PendingUser.findOne({
-        where: { email }
-    });
+// Helper: remove any existing pending record for this email before creating a new one
+PendingUser.cleanupExisting = async function (email) {
+    const existing = await PendingUser.findOne({ where: { email } });
     if (existing) {
         await existing.destroy();
     }

@@ -19,7 +19,10 @@ const User = sequelize.define('User', {
     firstName: { type: DataTypes.STRING, allowNull: false },
     lastName: { type: DataTypes.STRING, allowNull: false },
     email: { type: DataTypes.STRING, unique: true, allowNull: false },
-    password: { type: DataTypes.STRING, allowNull: false },
+
+    // allowNull: true — Google users have no password (they auth via Supabase OAuth)
+    password: { type: DataTypes.STRING, allowNull: true },
+
     role: {
         type: DataTypes.STRING,
         defaultValue: 'user'
@@ -29,8 +32,7 @@ const User = sequelize.define('User', {
         defaultValue: true,
         field: 'is_active'
     },
-
-    refreshToken: { type: DataTypes.STRING },
+    refreshToken: { type: DataTypes.STRING, allowNull: true },
     resetOtp: { type: DataTypes.STRING, allowNull: true },
     resetOtpExpiry: { type: DataTypes.BIGINT, allowNull: true }
 }, {
