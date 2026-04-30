@@ -1,6 +1,12 @@
 const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
+const { uploadImage } = require('../controllers/uploadController');
+const { authenticateToken } = require('../middlewares/authMiddleware');
+
+// 0. رفع صورة منتج إلى ImgBB عبر الـ Backend (محمي بـ JWT)
+//    POST /api/products/upload  — field name: "image"
+router.post('/upload', authenticateToken, uploadImage);
 
 // 1. جلب كل المنتجات (مرتبة بالأحدث حسب السيريال)
 router.get('/all', async (req, res) => {

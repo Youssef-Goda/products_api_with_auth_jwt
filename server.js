@@ -3,10 +3,12 @@ require('pg'); // إجبار السيرفر على استدعاء المكتبة
 const express = require('express');
 const dotenv = require('dotenv');
 const cors = require('cors');
+const path = require('path');
 const authRoutes = require('./routes/authRoutes');
 const productRoutes = require('./routes/productRoutes');
 const userRoutes = require('./routes/userRoutes');
 const cartRoutes = require('./routes/cartRoutes');
+const uploadRoutes = require('./routes/uploadRoutes');
 // const { authenticateToken } = require('./middlewares/authMiddleware');
 const sequelize = require('./config/database');
 
@@ -20,11 +22,15 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// ── Static files: serve uploaded images publicly ──────────────────────────────
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
 // ربط الرّوتات
 app.use('/api/auth', authRoutes);
 app.use('/api/products', /*authenticateToken,*/ productRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/cart', cartRoutes);
+app.use('/api/uploads', uploadRoutes);
 
 const PORT = process.env.PORT || 5000;
 
