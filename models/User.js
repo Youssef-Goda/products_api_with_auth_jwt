@@ -34,7 +34,44 @@ const User = sequelize.define('User', {
     },
     refreshToken: { type: DataTypes.STRING, allowNull: true },
     resetOtp: { type: DataTypes.STRING, allowNull: true },
-    resetOtpExpiry: { type: DataTypes.BIGINT, allowNull: true }
+    resetOtpExpiry: { type: DataTypes.BIGINT, allowNull: true },
+
+    // ── Extended Profile Fields ─────────────────────────────────────────────
+    phoneNumber: {
+        type: DataTypes.STRING,
+        allowNull: true
+    },
+    birthDate: {
+        type: DataTypes.DATEONLY,
+        allowNull: true
+    },
+    gender: {
+        type: DataTypes.ENUM('male', 'female', 'other'),
+        allowNull: true
+    },
+    profilePicture: {
+        type: DataTypes.STRING, // ImgBB URL
+        allowNull: true
+    },
+
+    // ── Secure Email Change Flow Fields ────────────────────────────────────
+    pendingEmail: {
+        type: DataTypes.STRING,
+        allowNull: true
+    },
+    emailChangeOtp: {
+        type: DataTypes.STRING,
+        allowNull: true
+    },
+    emailChangeOtpExpiry: {
+        type: DataTypes.BIGINT,
+        allowNull: true
+    },
+    // Tracks that identity has been confirmed (step 1) before sending OTP to new email (step 2)
+    emailChangeVerified: {
+        type: DataTypes.BOOLEAN,
+        defaultValue: false
+    }
 }, {
     tableName: 'users',
     timestamps: true

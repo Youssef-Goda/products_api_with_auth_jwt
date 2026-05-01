@@ -2,13 +2,11 @@ const { DataTypes } = require('sequelize');
 const sequelize = require('../config/database');
 
 const Product = sequelize.define('Product', {
-    // 1. الـ ID لازم يكون UUID عشان يطابق سوبا بيز
     id: {
         type: DataTypes.UUID,
         defaultValue: DataTypes.UUIDV4,
         primaryKey: true
     },
-    // 2. الحقول الجديدة اللي عملناها في الداتا بيز
     serial_id: {
         type: DataTypes.INTEGER,
         primaryKey: false,
@@ -16,7 +14,7 @@ const Product = sequelize.define('Product', {
     },
     code: {
         type: DataTypes.STRING,
-        field: 'code' // الاسم في سوبا بيز
+        field: 'code'
     },
     name: { type: DataTypes.STRING, allowNull: false },
     description: { type: DataTypes.TEXT },
@@ -32,9 +30,27 @@ const Product = sequelize.define('Product', {
         type: DataTypes.INTEGER,
         defaultValue: 0,
         field: 'countInStock'
+    },
+
+    // ── Category FK (REQUIRED) ──────────────────────────────────────────────
+    categoryId: {
+        type: DataTypes.UUID,
+        allowNull: false,
+        references: {
+            model: 'categories',
+            key: 'id'
+        },
+        onDelete: 'RESTRICT' // Prevent deleting a category that has products
+    },
+
+    // ── Dynamic specs (RAM, size, color, etc.) ─────────────────────────────
+    attributes: {
+        type: DataTypes.JSONB,
+        allowNull: true,
+        defaultValue: {}
     }
 }, {
-    tableName: 'Products', // اتأكد إن الحرف P كبير زي ما هو في سوبا
+    tableName: 'Products',
     timestamps: true
 });
 

@@ -1,79 +1,122 @@
 const express = require('express');
 const router = express.Router();
 const Product = require('../models/Product');
+const Category = require('../models/Category');
 const { uploadImage } = require('../controllers/uploadController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 
-// 0. رفع صورة منتج إلى ImgBB عبر الـ Backend (محمي بـ JWT)
-//    POST /api/products/upload  — field name: "image"
+// Define association for eager loading
+Product.belongsTo(Category, { foreignKey: 'categoryId', as: 'category' });
+
+// 0. Upload image to ImgBB (JWT protected)
 router.post('/upload', authenticateToken, uploadImage);
 
-// 1. جلب كل المنتجات (مرتبة بالأحدث حسب السيريال)
+// 1. GET /all ── Fetch all products with their category
 router.get('/all', async (req, res) => {
     try {
         const products = await Product.findAll({
-            // بنجيب كل الحقول بما فيها product_code و serial_id
+            include: [{ model: Category, as: 'category', attributes: ['id', 'name', 'slug'] }],
             order: [['serial_id', 'DESC']]
         });
         res.status(200).json(products);
     } catch (error) {
-        console.error("❌ Fetch Products Error:", error.message);
+        console.error('❌ Fetch Products Error:', error.message);
         res.status(500).json({ error: error.message });
     }
 });
 
-// 2. إضافة منتج جديد
-router.post('/add', async (req, res) => {
+// 2. GET /:id ── Fetch single product
+router.get('/:id', async (req, res) => {
     try {
-        const { name, description, price, imageUrls, oldPrice, rating, countInStock } = req.body;
+        const product = await Product.findByPk(req.params.id, {
+            include: [{ model: Category, as: 'category', attributes: ['id', 'name', 'slug'] }]
+        });
+        if (!product) return res.status(404).json({ error: 'Product not found' });
+        res.json(product);
+    } catch (error) {
+        res.status(500).json({ error: error.message });
+    }
+});
+
+// 3. POST /add ── Add a new product
+router.post('/add', authenticateToken, async (req, res) => {
+    try {
+        const { name, description, price, imageUrls, oldPrice, rating, countInStock, categoryId, attributes } = req.body;
+
+        if (!categoryId) {
+            return res.status(400).json({ error: 'categoryId is required' });
+        }
+
+        const category = await Category.findByPk(categoryId);
+        if (!category) {
+            return res.status(400).json({ error: 'Category not found' });
+        }
 
         const newProduct = await Product.create({
-            // ملحوظة: مش بنبعت id ولا product_code ولا serial_id
-            // سوبا بيز هتولدهم أوتوماتيك
             name,
             description,
             price: parseFloat(price),
             imageUrls: imageUrls || [],
             oldPrice: oldPrice ? parseFloat(oldPrice) : null,
             rating: rating ? parseFloat(rating) : 0.0,
-            countInStock: countInStock ? parseInt(countInStock) : 0
+            countInStock: countInStock ? parseInt(countInStock) : 0,
+            categoryId,
+            attributes: attributes || {}
         });
-        res.status(201).json(newProduct);
+
+        // Return with category info attached
+        const result = await Product.findByPk(newProduct.id, {
+            include: [{ model: Category, as: 'category', attributes: ['id', 'name', 'slug'] }]
+        });
+
+        res.status(201).json(result);
     } catch (error) {
-        console.error("❌ Add Product Error:", error.message);
+        console.error('❌ Add Product Error:', error.message);
         res.status(400).json({ error: error.message });
     }
 });
 
-// 3. تعديل منتج
-router.put('/:id', async (req, res) => {
+// 4. PUT /:id ── Update product
+router.put('/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        const { name, description, price, imageUrls, oldPrice, rating, countInStock } = req.body;
+        const { name, description, price, imageUrls, oldPrice, rating, countInStock, categoryId, attributes } = req.body;
 
         const product = await Product.findByPk(id);
         if (!product) return res.status(404).json({ error: 'Product not found' });
+
+        if (categoryId && categoryId !== product.categoryId) {
+            const category = await Category.findByPk(categoryId);
+            if (!category) return res.status(400).json({ error: 'Category not found' });
+        }
 
         await product.update({
             name,
             description,
             price: parseFloat(price),
-            imageUrls: imageUrls,
-            oldPrice: oldPrice ? parseFloat(oldPrice) : product.oldPrice,
-            rating: rating ? parseFloat(rating) : product.rating,
-            countInStock: countInStock !== undefined ? parseInt(countInStock) : product.countInStock
+            imageUrls: imageUrls ?? product.imageUrls,
+            oldPrice: oldPrice !== undefined ? (oldPrice ? parseFloat(oldPrice) : null) : product.oldPrice,
+            rating: rating !== undefined ? parseFloat(rating) : product.rating,
+            countInStock: countInStock !== undefined ? parseInt(countInStock) : product.countInStock,
+            categoryId: categoryId || product.categoryId,
+            attributes: attributes !== undefined ? attributes : product.attributes
         });
-        res.json(product);
+
+        const result = await Product.findByPk(id, {
+            include: [{ model: Category, as: 'category', attributes: ['id', 'name', 'slug'] }]
+        });
+
+        res.json(result);
     } catch (error) {
         res.status(400).json({ error: error.message });
     }
 });
 
-// 4. حذف منتج
-router.delete('/:id', async (req, res) => {
+// 5. DELETE /:id ── Delete product
+router.delete('/:id', authenticateToken, async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await Product.destroy({ where: { id: id } });
+        const result = await Product.destroy({ where: { id } });
         if (!result) return res.status(404).json({ error: 'Product not found' });
         res.json({ success: true, message: 'Product deleted' });
     } catch (error) {
