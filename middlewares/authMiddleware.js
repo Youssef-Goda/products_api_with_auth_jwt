@@ -6,7 +6,12 @@ const authenticateToken = (req, res, next) => {
     if (!token) return res.sendStatus(401);
 
     jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, user) => {
-        if (err) return res.sendStatus(403);
+        if (err) {
+            if (err.name === 'TokenExpiredError') {
+                return res.status(401).json({ success: false, message: 'Session expired' });
+            }
+            return res.status(403).json({ success: false, message: 'Forbidden' });
+        }
         req.user = user;
         next();
     });
