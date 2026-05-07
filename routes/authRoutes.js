@@ -69,10 +69,10 @@ router.post('/verify-otp', async (req, res) => {
         }
 
         res.json({
-            success: true,
-            accessToken,
-            refreshToken,
-            user: { id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName, email: newUser.email }
+            user: {
+                id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName, email: newUser.email,
+                phoneNumber: newUser.phoneNumber, birthDate: newUser.birthDate, gender: newUser.gender, profilePicture: newUser.profilePicture
+            }
         });
 
     } catch (err) {
@@ -104,7 +104,10 @@ router.post('/login', async (req, res) => {
 
         res.json({
             success: true, accessToken, refreshToken,
-            user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email }
+            user: {
+                id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email,
+                phoneNumber: user.phoneNumber, birthDate: user.birthDate, gender: user.gender, profilePicture: user.profilePicture
+            }
         });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
@@ -165,7 +168,10 @@ router.post('/reset-password', async (req, res) => {
 
         res.json({
             success: true, accessToken, refreshToken,
-            user: { id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email }
+            user: {
+                id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email,
+                phoneNumber: user.phoneNumber, birthDate: user.birthDate, gender: user.gender, profilePicture: user.profilePicture
+            }
         });
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });

@@ -65,6 +65,26 @@ router.put('/toggle-status/:id', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════
+// ── GET /profile ── Get own profile (Authenticated)
+// ══════════════════════════════════════════════════════════
+router.get('/profile', authenticateToken, async (req, res) => {
+  try {
+    const user = await User.findByPk(req.user.id, {
+      attributes: [
+        'id', 'firstName', 'lastName', 'email', 'phoneNumber',
+        'birthDate', 'gender', 'profilePicture', 'role', 'isActive'
+      ]
+    });
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    res.json({ success: true, data: { user } });
+  } catch (err) {
+    console.error('❌ Fetch Profile Error:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════
 // ── PUT /profile ── Update own profile (Authenticated)
 // ══════════════════════════════════════════════════════════
 router.put('/profile', authenticateToken, async (req, res) => {
@@ -205,7 +225,7 @@ router.post('/change-email/send-otp', authenticateToken, async (req, res) => {
 
     // Check if new email is already taken
     const conflict = await User.findOne({ where: { email: newEmail } });
-    if (conflict) return res.status(409).json({ success: false, message: 'Email already in use by another account' });
+    if (conflict) return res.status(409).json({ success: false, message: 'Email dosn\'t exist' });
 
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
 
@@ -258,7 +278,7 @@ router.post('/change-email/confirm', authenticateToken, async (req, res) => {
     const conflict = await User.findOne({ where: { email: newEmail }, transaction: t });
     if (conflict && conflict.id !== user.id) {
       await t.rollback();
-      return res.status(409).json({ success: false, message: 'Email already in use by another account' });
+      return res.status(409).json({ success: false, message: 'Email dosn\'t exist' });
     }
 
     // Atomically update the email and clear all flow fields
