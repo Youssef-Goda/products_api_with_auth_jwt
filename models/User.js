@@ -29,8 +29,7 @@ const User = sequelize.define('User', {
     },
     isActive: {
         type: DataTypes.BOOLEAN,
-        defaultValue: true,
-        field: 'is_active'
+        defaultValue: true
     },
     refreshToken: { type: DataTypes.STRING, allowNull: true },
     resetOtp: { type: DataTypes.STRING, allowNull: true },
@@ -39,46 +38,38 @@ const User = sequelize.define('User', {
     // ── Extended Profile Fields ─────────────────────────────────────────────
     phoneNumber: {
         type: DataTypes.STRING,
-        allowNull: true,
-        field: 'phone_number'
+        allowNull: true
     },
     birthDate: {
         type: DataTypes.DATEONLY,
-        allowNull: true,
-        field: 'birth_date'
+        allowNull: true
     },
     gender: {
         type: DataTypes.ENUM('male', 'female', 'other'),
-        allowNull: true,
-        field: 'gender'
+        allowNull: true
     },
     profilePicture: {
         type: DataTypes.STRING, // ImgBB URL
-        allowNull: true,
-        field: 'profile_picture'
+        allowNull: true
     },
 
     // ── Secure Email Change Flow Fields ────────────────────────────────────
     pendingEmail: {
         type: DataTypes.STRING,
-        allowNull: true,
-        field: 'pending_email'
+        allowNull: true
     },
     emailChangeOtp: {
         type: DataTypes.STRING,
-        allowNull: true,
-        field: 'email_change_otp'
+        allowNull: true
     },
     emailChangeOtpExpiry: {
         type: DataTypes.BIGINT,
-        allowNull: true,
-        field: 'email_change_otp_expiry'
+        allowNull: true
     },
     // Tracks that identity has been confirmed (step 1) before sending OTP to new email (step 2)
     emailChangeVerified: {
         type: DataTypes.BOOLEAN,
-        defaultValue: false,
-        field: 'email_change_verified'
+        defaultValue: false
     }
 }, {
     tableName: 'users',

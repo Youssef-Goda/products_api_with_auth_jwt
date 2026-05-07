@@ -114,14 +114,16 @@ router.put('/profile', authenticateToken, async (req, res) => {
       success: true,
       message: 'Profile updated successfully',
       data: {
-        id: user.id,
-        firstName: user.firstName,
-        lastName: user.lastName,
-        email: user.email,
-        phoneNumber: user.phoneNumber,
-        birthDate: user.birthDate,
-        gender: user.gender,
-        profilePicture: user.profilePicture
+        user: {
+          id: user.id,
+          firstName: user.firstName,
+          lastName: user.lastName,
+          email: user.email,
+          phoneNumber: user.phoneNumber,
+          birthDate: user.birthDate,
+          gender: user.gender,
+          profilePicture: user.profilePicture
+        }
       }
     });
   } catch (err) {
