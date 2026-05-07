@@ -25,8 +25,21 @@ require('./models/User');
 dotenv.config();
 const app = express();
 
-app.use(cors());
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
+
+app.get('/api/test-connection', async (req, res) => {
+  try {
+    await sequelize.authenticate();
+    res.json({ status: 'Connected', message: 'Server can see Supabase!' });
+  } catch (err) {
+    res.status(500).json({ status: 'Failed', error: err.message });
+  }
+});
 
 // ── Static files: serve uploaded images publicly ───────────────────────────────
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
