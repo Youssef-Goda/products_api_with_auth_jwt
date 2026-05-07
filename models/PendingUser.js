@@ -5,15 +5,18 @@ const PendingUser = sequelize.define('PendingUser', {
     id: {
         type: DataTypes.UUID,
         defaultValue: DataTypes.UUIDV4,
-        primaryKey: true
+        primaryKey: true,
+        field: 'id'
     },
     firstName: {
         type: DataTypes.STRING,
-        allowNull: false
+        allowNull: false,
+        field: 'firstName'
     },
     lastName: {
         type: DataTypes.STRING,
-        allowNull: false
+        allowNull: false,
+        field: 'lastName'
     },
     email: {
         type: DataTypes.STRING,
@@ -21,23 +24,36 @@ const PendingUser = sequelize.define('PendingUser', {
         unique: true,
         validate: {
             isEmail: true
-        }
+        },
+        field: 'email'
     },
     password: {
         type: DataTypes.STRING,
-        allowNull: false
+        allowNull: false,
+        field: 'password'
     },
     otp: {
         type: DataTypes.STRING,
-        allowNull: true
+        allowNull: true,
+        field: 'otp'
     },
     otpExpiry: {
         type: DataTypes.BIGINT,
-        allowNull: true
+        allowNull: true,
+        field: 'otpExpiry'
+    },
+    createdAt: {
+        type: DataTypes.DATE,
+        field: 'createdAt'
+    },
+    updatedAt: {
+        type: DataTypes.DATE,
+        field: 'updatedAt'
     }
 }, {
     tableName: 'pending_users',
-    timestamps: true
+    timestamps: true,
+    underscored: false
 });
 
 // Helper: remove any existing pending record for this email before creating a new one
