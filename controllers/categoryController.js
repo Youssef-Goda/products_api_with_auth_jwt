@@ -44,7 +44,7 @@ const getCategoryById = async (req, res) => {
         const category = await Category.findByPk(req.params.id, {
             include: [
                 { model: Category, as: 'parent', attributes: ['id', 'name', 'slug'] },
-                { model: Category, as: 'children', attributes: ['id', 'name', 'slug'] }
+                { model: Category, as: 'children', attributes: ['id', 'name', 'slug', 'iconUrl'] }
             ]
         });
         if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
@@ -57,7 +57,7 @@ const getCategoryById = async (req, res) => {
 // ── POST /api/categories ── Create category (Admin only)
 const createCategory = async (req, res) => {
     try {
-        const { name, parentId } = req.body;
+        const { name, iconUrl, parentId } = req.body;
         if (!name) return res.status(400).json({ success: false, message: 'Name is required' });
 
         let slug = generateSlug(name);
@@ -72,7 +72,12 @@ const createCategory = async (req, res) => {
             if (!parent) return res.status(400).json({ success: false, message: 'Parent category not found' });
         }
 
-        const category = await Category.create({ name, slug, parentId: parentId || null });
+        const category = await Category.create({
+            name,
+            slug,
+            iconUrl: iconUrl || null,
+            parentId: parentId || null
+        });
         res.status(201).json({ success: true, data: category });
     } catch (err) {
         console.error('❌ Create Category Error:', err);
@@ -83,7 +88,7 @@ const createCategory = async (req, res) => {
 // ── PUT /api/categories/:id ── Update category (Admin only)
 const updateCategory = async (req, res) => {
     try {
-        const { name, parentId } = req.body;
+        const { name, iconUrl, parentId } = req.body;
         const category = await Category.findByPk(req.params.id);
         if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
 
@@ -104,6 +109,7 @@ const updateCategory = async (req, res) => {
             const existing = await Category.findOne({ where: { slug: newSlug, id: { [Op.ne]: req.params.id } } });
             updates.slug = existing ? `${newSlug}-${Date.now()}` : newSlug;
         }
+        if (iconUrl !== undefined) updates.iconUrl = iconUrl || null;
         if (parentId !== undefined) updates.parentId = parentId || null;
 
         await category.update(updates);

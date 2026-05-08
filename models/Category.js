@@ -5,20 +5,29 @@ const Category = sequelize.define('Category', {
     id: {
         type: DataTypes.UUID,
         defaultValue: DataTypes.UUIDV4,
-        primaryKey: true
+        primaryKey: true,
+        field: 'id'
     },
     name: {
         type: DataTypes.STRING,
-        allowNull: false
+        allowNull: false,
+        field: 'name'
     },
     slug: {
         type: DataTypes.STRING,
         unique: true,
-        allowNull: false
+        allowNull: false,
+        field: 'slug'
+    },
+    iconUrl: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        field: 'iconUrl'
     },
     parentId: {
         type: DataTypes.UUID,
         allowNull: true,
+        field: 'parentId',
         references: {
             model: 'categories',
             key: 'id'
@@ -27,7 +36,8 @@ const Category = sequelize.define('Category', {
     }
 }, {
     tableName: 'categories',
-    timestamps: true
+    timestamps: true,
+    underscored: false
 });
 
 // Self-referencing associations: parent ↔ children

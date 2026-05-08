@@ -1,10 +1,24 @@
 const express = require('express');
 const router = express.Router();
 const bcrypt = require('bcryptjs');
+const multer = require('multer');
+const FormData = require('form-data');
+const axios = require('axios');
 const sequelize = require('../config/database');
 const User = require('../models/User');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { sendOTP } = require('../utils/otpHelper');
+
+// ── Multer: memory storage (no disk writes) ─────────────────────────────────
+const _upload = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    const allowed = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (allowed.includes(file.mimetype)) cb(null, true);
+    else cb(new multer.MulterError('LIMIT_UNEXPECTED_FILE', 'Only JPG/PNG/WebP files are allowed.'));
+  },
+  limits: { fileSize: 5 * 1024 * 1024 } // 5 MB
+});
 
 // ── GET / ── Get all users (Admin)
 router.get('/', async (req, res) => {
@@ -130,6 +144,93 @@ router.put('/profile', authenticateToken, async (req, res) => {
     console.error('❌ Profile Update Error:', err);
     res.status(500).json({ success: false, message: err.message });
   }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── POST /profile/picture ── Upload & save profile picture (Authenticated)
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * POST /api/users/profile/picture
+ * Body: multipart/form-data, field name: "image" (JPG/PNG/WebP, max 5 MB)
+ * 1. Multer buffers the file in memory
+ * 2. Forwards to ImgBB → gets a permanent public URL
+ * 3. Saves the URL to users.profilePicture
+ * 4. Returns { success, data: { user: { ...all profile fields... } } }
+ */
+router.post('/profile/picture', authenticateToken, (req, res) => {
+  _upload.single('image')(req, res, async (err) => {
+    // ── Multer errors ──────────────────────────────────────────────────────
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ success: false, message: 'File too large. Maximum 5 MB.' });
+      }
+      return res.status(400).json({ success: false, message: err.field ?? 'Only JPG/PNG/WebP files are allowed.' });
+    }
+    if (err) {
+      console.error('❌ Upload middleware error:', err);
+      return res.status(500).json({ success: false, message: 'File upload failed.' });
+    }
+    if (!req.file) {
+      return res.status(400).json({ success: false, message: 'No image provided. Send the file under field name "image".' });
+    }
+
+    // ── Forward to ImgBB ───────────────────────────────────────────────────
+    const apiKey = process.env.IMGBB_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ success: false, message: 'Server configuration error: ImgBB API key missing.' });
+    }
+
+    try {
+      const form = new FormData();
+      form.append('image', req.file.buffer, {
+        filename: req.file.originalname || 'avatar.jpg',
+        contentType: req.file.mimetype,
+      });
+
+      const imgbbRes = await axios.post(
+        `https://api.imgbb.com/1/upload?key=${apiKey}`,
+        form,
+        { headers: form.getHeaders(), timeout: 30_000 }
+      );
+
+      const imgbbData = imgbbRes.data?.data;
+      const imageUrl = imgbbData?.display_url ?? imgbbData?.url;
+      if (!imageUrl) {
+        return res.status(502).json({ success: false, message: 'ImgBB did not return a valid URL.' });
+      }
+
+      // ── Persist URL to DB ─────────────────────────────────────────────────
+      const user = await User.findByPk(req.user.id);
+      if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+      await user.update({ profilePicture: imageUrl });
+
+      console.log(`✅ Profile picture updated for user ${req.user.id}: ${imageUrl}`);
+      return res.json({
+        success: true,
+        data: {
+          user: {
+            id: user.id,
+            firstName: user.firstName,
+            lastName: user.lastName,
+            email: user.email,
+            phoneNumber: user.phoneNumber,
+            birthDate: user.birthDate,
+            gender: user.gender,
+            profilePicture: user.profilePicture,
+            role: user.role,
+            isActive: user.isActive,
+          }
+        }
+      });
+    } catch (imgbbErr) {
+      const status = imgbbErr.response?.status;
+      const detail = imgbbErr.response?.data?.error?.message ?? imgbbErr.message;
+      console.error(`❌ ImgBB error (${status}):`, detail);
+      return res.status(502).json({ success: false, message: `Image upload failed: ${detail}` });
+    }
+  });
 });
 
 // ══════════════════════════════════════════════════════════
