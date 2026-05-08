@@ -35,12 +35,12 @@ const Product = sequelize.define('Product', {
     // ── Category FK (REQUIRED) ──────────────────────────────────────────────
     categoryId: {
         type: DataTypes.UUID,
-        allowNull: false,
+        allowNull: true, // Allow null for backward compat with old products
         references: {
             model: 'categories',
             key: 'id'
         },
-        onDelete: 'RESTRICT' // Prevent deleting a category that has products
+        onDelete: 'SET NULL' // If a category is deleted, null out the FK instead of blocking
     },
 
     // ── Dynamic specs (RAM, size, color, etc.) ─────────────────────────────

@@ -43,13 +43,12 @@ router.post('/add', authenticateToken, async (req, res) => {
     try {
         const { name, description, price, imageUrls, oldPrice, rating, countInStock, categoryId, attributes } = req.body;
 
-        if (!categoryId) {
-            return res.status(400).json({ error: 'categoryId is required' });
-        }
-
-        const category = await Category.findByPk(categoryId);
-        if (!category) {
-            return res.status(400).json({ error: 'Category not found' });
+        // categoryId is optional — validate it only when provided
+        if (categoryId) {
+            const category = await Category.findByPk(categoryId);
+            if (!category) {
+                return res.status(400).json({ error: 'Category not found' });
+            }
         }
 
         const newProduct = await Product.create({
@@ -60,7 +59,7 @@ router.post('/add', authenticateToken, async (req, res) => {
             oldPrice: oldPrice ? parseFloat(oldPrice) : null,
             rating: rating ? parseFloat(rating) : 0.0,
             countInStock: countInStock ? parseInt(countInStock) : 0,
-            categoryId,
+            categoryId: categoryId || null,
             attributes: attributes || {}
         });
 
