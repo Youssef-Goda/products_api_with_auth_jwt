@@ -84,6 +84,12 @@ const User = sequelize.define('User', {
         defaultValue: false,
         field: 'emailChangeVerified'
     },
+    // ── FCM Push Notification Token ─────────────────────────────────────────
+    fcmToken: {
+        type: DataTypes.STRING,
+        allowNull: true,
+        field: 'fcmToken'
+    },
     createdAt: {
         type: DataTypes.DATE,
         field: 'createdAt'

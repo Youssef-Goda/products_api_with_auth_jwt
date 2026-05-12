@@ -407,4 +407,52 @@ router.post('/change-email/confirm', authenticateToken, async (req, res) => {
   }
 });
 
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+// \u2500\u2500 PUT /fcm-token \u2500\u2500 Save / refresh FCM push token (Authenticated)
+// Body: { fcmToken: string }
+// \u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550\u2550
+router.put('/fcm-token', authenticateToken, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken || typeof fcmToken !== 'string' || fcmToken.trim() === '') {
+      return res.status(400).json({ success: false, message: 'fcmToken is required and must be a non-empty string.' });
+    }
+
+    const user = await User.findByPk(req.user.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    await user.update({ fcmToken: fcmToken.trim() });
+
+    console.log(`\u2705 FCM token updated for user ${req.user.id}`);
+    return res.json({ success: true, message: 'FCM token saved successfully.' });
+  } catch (err) {
+    console.error('\u274c FCM Token Update Error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// ── POST /update-fcm-token ── Flutter-compatible alias (Authenticated)
+// Body: { fcmToken: string }
+// ══════════════════════════════════════════════════════════════════════════════
+router.post('/update-fcm-token', authenticateToken, async (req, res) => {
+  try {
+    const { fcmToken } = req.body;
+    if (!fcmToken || typeof fcmToken !== 'string' || fcmToken.trim() === '') {
+      return res.status(400).json({ success: false, message: 'fcmToken is required and must be a non-empty string.' });
+    }
+
+    const user = await User.findByPk(req.user.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found.' });
+
+    await user.update({ fcmToken: fcmToken.trim() });
+
+    console.log(`✅ FCM token updated for user ${req.user.id}`);
+    return res.json({ success: true, message: 'FCM token saved successfully.' });
+  } catch (err) {
+    console.error('❌ FCM Token Update Error:', err);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
 module.exports = router;
