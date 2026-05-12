@@ -2,14 +2,6 @@
  * fcmService.js
  * ─────────────────────────────────────────────────────────────────────────────
  * Firebase Admin SDK initialisation + helper functions for push notifications.
- *
- * SETUP:
- *  1. Download your Firebase service account JSON from:
- *     Firebase Console → Project Settings → Service Accounts → Generate new key
- *  2. Save it as  config/firebase-service-account.json  (already git-ignored).
- *  3. Add  GOOGLE_APPLICATION_CREDENTIALS=./config/firebase-service-account.json
- *     to your .env  –OR–  set FIREBASE_SERVICE_ACCOUNT_JSON to the raw JSON string
- *     (preferred for production / Vercel where you can't ship files).
  */
 
 const admin = require('firebase-admin');
@@ -18,22 +10,30 @@ const admin = require('firebase-admin');
 if (!admin.apps.length) {
   let credential;
 
-  if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
-    // Production: JSON injected as an env-var string
+  // 1. بص في فيرسال (Environment Variable)
+  // جربنا الاسمين عشان لو نسيت حرف الـ JSON يلقط برضه
+  const envConfig = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT;
+
+  if (envConfig) {
     try {
-      const serviceAccount = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+      const serviceAccount = JSON.parse(envConfig);
       credential = admin.credential.cert(serviceAccount);
+      console.log('✅ FCM: Initialised via Environment Variable (Vercel)');
     } catch (e) {
-      console.error('❌ FCM: Failed to parse FIREBASE_SERVICE_ACCOUNT_JSON:', e.message);
+      console.error('❌ FCM: Failed to parse Environment Variable:', e.message);
     }
   } else {
-    // Local dev: JSON file on disk (path from env or default)
+    // 2. لو مش على فيرسال، بص على جهازك (Local dev)
     const path = require('path');
+    
+    // هنا عدلتلك المسار عشان يقرأ اسم الملف الطويل اللي عندك في الصورة
     const keyPath =
       process.env.GOOGLE_APPLICATION_CREDENTIALS ||
-      path.join(__dirname, '../config/firebase-service-account.json');
+      path.join(__dirname, '../config/dealio-eg7-firebase-adminsdk-fbsvc-9325784312.json');
+
     try {
       credential = admin.credential.cert(require(keyPath));
+      console.log('✅ FCM: Initialised via Local JSON file');
     } catch (e) {
       console.warn(
         '⚠️  FCM: Could not load service-account file from',
@@ -45,7 +45,7 @@ if (!admin.apps.length) {
 
   if (credential) {
     admin.initializeApp({ credential });
-    console.log('✅ Firebase Admin SDK initialised');
+    console.log('🚀 Firebase Admin SDK initialised successfully');
   }
 }
 
@@ -53,12 +53,6 @@ if (!admin.apps.length) {
 
 /**
  * Send a push notification to a single FCM token.
- *
- * @param {string} fcmToken   - Device FCM registration token
- * @param {string} title      - Notification title
- * @param {string} body       - Notification body text
- * @param {Object} [data={}]  - Optional key-value data payload (string values only)
- * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
  */
 async function sendNotification(fcmToken, title, body, data = {}) {
   if (!admin.apps.length) {
@@ -68,7 +62,6 @@ async function sendNotification(fcmToken, title, body, data = {}) {
     return { success: false, error: 'No FCM token provided' };
   }
 
-  // Stringify all data values (FCM requirement)
   const stringData = Object.fromEntries(
     Object.entries(data).map(([k, v]) => [k, String(v)])
   );
@@ -97,13 +90,7 @@ async function sendNotification(fcmToken, title, body, data = {}) {
 }
 
 /**
- * Send a push notification to multiple FCM tokens in one batch (up to 500).
- *
- * @param {string[]} fcmTokens
- * @param {string}   title
- * @param {string}   body
- * @param {Object}   [data={}]
- * @returns {Promise<admin.messaging.BatchResponse|null>}
+ * Send a push notification to multiple FCM tokens.
  */
 async function sendMulticastNotification(fcmTokens, title, body, data = {}) {
   if (!admin.apps.length) {
