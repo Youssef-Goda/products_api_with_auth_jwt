@@ -13,6 +13,7 @@ const cartRoutes = require('./routes/cartRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
 const orderRoutes = require('./routes/orderRoutes');
+const notificationRoutes = require('./routes/notificationRoutes'); // New Route
 
 const sequelize = require('./config/database');
 
@@ -20,7 +21,7 @@ const sequelize = require('./config/database');
 require('./models/Cart');
 require('./models/CartEvent');
 require('./models/Category');
-require('./models/Product');  // Product has FK → Category (must load after Category)
+require('./models/Product');  
 require('./models/User');
 
 dotenv.config();
@@ -42,7 +43,7 @@ app.get('/api/test-connection', async (req, res) => {
   }
 });
 
-// ── Static files: serve uploaded images publicly ───────────────────────────────
+// ── Static files ──────────────────────────────────────────────────────────────
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -53,6 +54,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/notifications', notificationRoutes); // New Route Registration
 
 const PORT = process.env.PORT || 5000;
 
