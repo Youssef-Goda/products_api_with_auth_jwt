@@ -11,12 +11,15 @@ if (!admin.apps.length) {
   let credential;
 
   // 1. بص في فيرسال (Environment Variable)
-  // جربنا الاسمين عشان لو نسيت حرف الـ JSON يلقط برضه
   const envConfig = process.env.FIREBASE_SERVICE_ACCOUNT_JSON || process.env.FIREBASE_SERVICE_ACCOUNT;
 
   if (envConfig) {
     try {
       const serviceAccount = JSON.parse(envConfig);
+      // تصحيح للـ Private Key لو فيه مشكلة في الـ New Lines في فيرسال
+      if (serviceAccount.private_key) {
+        serviceAccount.private_key = serviceAccount.private_key.replace(/\\n/g, '\n');
+      }
       credential = admin.credential.cert(serviceAccount);
       console.log('✅ FCM: Initialised via Environment Variable (Vercel)');
     } catch (e) {
@@ -25,8 +28,6 @@ if (!admin.apps.length) {
   } else {
     // 2. لو مش على فيرسال، بص على جهازك (Local dev)
     const path = require('path');
-    
-    // هنا عدلتلك المسار عشان يقرأ اسم الملف الطويل اللي عندك في الصورة
     const keyPath =
       process.env.GOOGLE_APPLICATION_CREDENTIALS ||
       path.join(__dirname, '../config/dealio-eg7-firebase-adminsdk-fbsvc-9325784312.json');
@@ -72,7 +73,13 @@ async function sendNotification(fcmToken, title, body, data = {}) {
     data: stringData,
     android: {
       priority: 'high',
-      notification: { sound: 'default', channelId: 'dealio_orders' },
+      notification: { 
+        sound: 'default', 
+        channelId: 'dealio_orders',
+        icon: 'ic_notification', // لازم يطابق اسم الملف في drawable
+        color: '#FFD700',        // لون الخلفية اللي طلبته (الدهبي)
+        clickAction: 'FLUTTER_NOTIFICATION_CLICK'
+      },
     },
     apns: {
       payload: { aps: { sound: 'default', badge: 1 } },
@@ -111,7 +118,13 @@ async function sendMulticastNotification(fcmTokens, title, body, data = {}) {
     data: stringData,
     android: {
       priority: 'high',
-      notification: { sound: 'default', channelId: 'dealio_orders' },
+      notification: { 
+        sound: 'default', 
+        channelId: 'dealio_orders',
+        icon: 'ic_notification', // لازم يطابق اسم الملف في drawable
+        color: '#FFD700',        // لون الخلفية اللي طلبته (الدهبي)
+        clickAction: 'FLUTTER_NOTIFICATION_CLICK'
+      },
     },
     apns: {
       payload: { aps: { sound: 'default', badge: 1 } },

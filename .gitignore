@@ -1,3 +1,4 @@
 node_modules/
 .env
 seed.sql
+config/dealio-eg7-firebase-adminsdk-fbsvc-9325784312.json
