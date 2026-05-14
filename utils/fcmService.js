@@ -77,7 +77,6 @@ async function sendNotification(fcmToken, title, body, data = {}) {
         sound: 'default', 
         channelId: 'dealio_orders',
         icon: 'ic_notification', // لازم يطابق اسم الملف في drawable
-        color: '#FFD700',        // لون الخلفية اللي طلبته (الدهبي)
         clickAction: 'FLUTTER_NOTIFICATION_CLICK'
       },
     },
@@ -122,7 +121,6 @@ async function sendMulticastNotification(fcmTokens, title, body, data = {}) {
         sound: 'default', 
         channelId: 'dealio_orders',
         icon: 'ic_notification', // لازم يطابق اسم الملف في drawable
-        color: '#FFD700',        // لون الخلفية اللي طلبته (الدهبي)
         clickAction: 'FLUTTER_NOTIFICATION_CLICK'
       },
     },
