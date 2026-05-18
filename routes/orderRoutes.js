@@ -35,14 +35,127 @@ const supabase = createClient(
 const VALID_STATUSES = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'];
 
 // ══════════════════════════════════════════════════════════════════════════════
+// SHARED: Verify JWT user exists in public.users and return canonical UUID.
+// Mirrors the same helper in addressRoutes.js so the JWT id always matches
+// the FK that points to public.users(id), NOT auth.users.
+// ══════════════════════════════════════════════════════════════════════════════
+async function resolveUserId(req, res) {
+  const jwtId = req.user?.id;
+  console.log(`🔍 [Orders] req.user = ${JSON.stringify(req.user)}`);
+  if (!jwtId) {
+    res.status(401).json({ success: false, message: 'Not authenticated.' });
+    return null;
+  }
+  const { data: userRow, error } = await supabase
+    .from('users')
+    .select('id')
+    .eq('id', jwtId)
+    .maybeSingle();
+  if (error) {
+    console.error('❌ [Orders] resolveUserId DB error:', error.message);
+    res.status(500).json({ success: false, message: 'Database error verifying user.' });
+    return null;
+  }
+  if (!userRow) {
+    console.error(`❌ [Orders] User ${jwtId} not found in public.users`);
+    res.status(403).json({ success: false, message: `User ${jwtId} not found in public.users.` });
+    return null;
+  }
+  return userRow.id;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POST /api/orders  — Place a new order (atomic: order row + items)
+// Body: { shipping_address_id, payment_method, items[], subtotal, tax, total, notes? }
+// ══════════════════════════════════════════════════════════════════════════════
+router.post('/', authenticateToken, async (req, res) => {
+  const userId = await resolveUserId(req, res);
+  if (!userId) return;
+
+  const {
+    shipping_address_id,
+    payment_method = 'cod',
+    items,
+    subtotal,
+    tax,
+    total,
+    notes,
+  } = req.body;
+
+  // ── Validation ──────────────────────────────────────────────────────────
+  if (!shipping_address_id) {
+    return res.status(400).json({ success: false, message: 'shipping_address_id is required.' });
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    return res.status(400).json({ success: false, message: 'items must be a non-empty array.' });
+  }
+
+  console.log(`📦 [Orders] POST payload: userId=${userId}, items=${items.length}, total=${total}`);
+
+  try {
+    // 1️⃣  Insert the order row
+    const { data: orderRow, error: orderErr } = await supabase
+      .from('orders')
+      .insert({
+        user_id: userId,
+        shipping_address_id,
+        payment_method,
+        status: 'pending',
+        subtotal,
+        tax,
+        total,
+        notes: notes || null,
+      })
+      .select()
+      .single();
+
+    if (orderErr) throw orderErr;
+    const orderId = orderRow.id;
+    console.log(`✅ [Orders] Order row created: ${orderId}`);
+
+    // 2️⃣  Bulk-insert order_items
+    const itemsPayload = items.map((item) => ({
+      order_id: orderId,
+      product_id: item.product_id,
+      product_name: item.product_name,
+      product_code: item.product_code ?? null,
+      image_url: item.image_url ?? null,
+      unit_price: item.unit_price,
+      quantity: item.quantity,
+      subtotal: item.subtotal,
+    }));
+
+    const { error: itemsErr } = await supabase.from('order_items').insert(itemsPayload);
+    if (itemsErr) throw itemsErr;
+    console.log(`✅ [Orders] ${itemsPayload.length} order_items inserted`);
+
+    // 3️⃣  Fetch full order (with items + address) to return
+    const { data: fullOrder, error: fetchErr } = await supabase
+      .from('orders')
+      .select('*, order_items(*), shipping_addresses(*)')
+      .eq('id', orderId)
+      .single();
+
+    if (fetchErr) throw fetchErr;
+
+    return res.status(201).json({ success: true, data: fullOrder });
+  } catch (err) {
+    console.error('❌ [Orders] POST / Error:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // GET /api/orders  — List orders for the authenticated user
 // ══════════════════════════════════════════════════════════════════════════════
 router.get('/', authenticateToken, async (req, res) => {
+  const userId = await resolveUserId(req, res);
+  if (!userId) return;
   try {
     const { data, error } = await supabase
       .from('orders')
       .select('*')
-      .eq('user_id', req.user.id)
+      .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
     if (error) throw error;
