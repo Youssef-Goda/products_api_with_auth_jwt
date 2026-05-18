@@ -13,6 +13,7 @@ const cartRoutes = require('./routes/cartRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const categoryRoutes = require('./routes/categoryRoutes');
 const orderRoutes = require('./routes/orderRoutes');
+const addressRoutes = require('./routes/addressRoutes');
 const notificationRoutes = require('./routes/notificationRoutes'); // New Route
 
 const sequelize = require('./config/database');
@@ -54,6 +55,7 @@ app.use('/api/cart', cartRoutes);
 app.use('/api/uploads', uploadRoutes);
 app.use('/api/categories', categoryRoutes);
 app.use('/api/orders', orderRoutes);
+app.use('/api/addresses', addressRoutes);
 app.use('/api/notifications', notificationRoutes); // New Route Registration
 
 const PORT = process.env.PORT || 5000;
