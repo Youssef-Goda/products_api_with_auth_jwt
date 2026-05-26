@@ -129,7 +129,19 @@ router.post('/', authenticateToken, async (req, res) => {
     if (itemsErr) throw itemsErr;
     console.log(`✅ [Orders] ${itemsPayload.length} order_items inserted`);
 
-    // 3️⃣  Fetch full order (with items + address) to return
+    // 3️⃣  Clear the user's cart (server-side, so all devices sync)
+    const { error: cartErr } = await supabase
+      .from('cart_items')
+      .delete()
+      .eq('user_id', userId);
+    if (cartErr) {
+      // Non-fatal: log but don't abort the order
+      console.warn(`⚠️ [Orders] Cart clear failed for user ${userId}: ${cartErr.message}`);
+    } else {
+      console.log(`🛒 [Orders] Cart cleared for user ${userId}`);
+    }
+
+    // 4️⃣  Fetch full order (with items + address) to return
     const { data: fullOrder, error: fetchErr } = await supabase
       .from('orders')
       .select('*, order_items(*), shipping_addresses(*)')
@@ -154,7 +166,7 @@ router.get('/', authenticateToken, async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('orders')
-      .select('*')
+      .select('*, order_items(*), shipping_addresses(*)')
       .eq('user_id', userId)
       .order('created_at', { ascending: false });
 
