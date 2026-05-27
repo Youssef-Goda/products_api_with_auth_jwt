@@ -22,6 +22,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middlewares/authMiddleware');
+const { checkRole } = require('../middlewares/checkRole');
 const { notifyOrderStatusChanged } = require('../services/orderNotificationService');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -179,11 +180,9 @@ router.get('/', authenticateToken, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GET /api/orders/all  — Admin: list all orders
+// GET /api/orders/all  — Admin: list all orders (Admin / Super-Admin only)
 // ══════════════════════════════════════════════════════════════════════════════
-router.get('/all', authenticateToken, async (req, res) => {
-  // Optionally guard with role check:
-  // if (req.user.role !== 'admin') return res.status(403).json({ success: false, message: 'Forbidden' });
+router.get('/all', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('orders')
@@ -220,10 +219,10 @@ router.get('/:id', authenticateToken, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// PATCH /api/orders/:id/status  — Update order status + trigger push notification
+// PATCH /api/orders/:id/status  — Update order status (Admin / Super-Admin only)
 // Body: { status: string }
 // ══════════════════════════════════════════════════════════════════════════════
-router.patch('/:id/status', authenticateToken, async (req, res) => {
+router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
   const { status } = req.body;
 
   if (!status || !VALID_STATUSES.includes(status)) {

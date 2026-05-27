@@ -7,6 +7,7 @@ const axios = require('axios');
 const sequelize = require('../config/database');
 const User = require('../models/User');
 const { authenticateToken } = require('../middlewares/authMiddleware');
+const { checkRole } = require('../middlewares/checkRole');
 const { sendOTP } = require('../utils/otpHelper');
 
 // ── Multer: memory storage (no disk writes) ─────────────────────────────────
@@ -20,8 +21,8 @@ const _upload = multer({
   limits: { fileSize: 5 * 1024 * 1024 } // 5 MB
 });
 
-// ── GET / ── Get all users (Admin)
-router.get('/', async (req, res) => {
+// ── GET / ── Get all users (Admin / Super-Admin only)
+router.get('/', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
   try {
     const users = await User.findAll({
       attributes: [
@@ -39,8 +40,8 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ── DELETE /:id ── Delete user (Admin)
-router.delete('/:id', async (req, res) => {
+// ── DELETE /:id ── Delete user (Super-Admin only)
+router.delete('/:id', authenticateToken, checkRole(['super_admin']), async (req, res) => {
   try {
     const result = await User.destroy({ where: { id: req.params.id } });
     if (result) {
@@ -54,10 +55,15 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-// ── PUT /update-role/:id ── Update role (Admin)
-router.put('/update-role/:id', async (req, res) => {
+// ── PUT /update-role/:id ── Update role (Super-Admin only)
+// Only super_admin may change roles to prevent privilege escalation.
+router.put('/update-role/:id', authenticateToken, checkRole(['super_admin']), async (req, res) => {
   try {
     const { role } = req.body;
+    const validRoles = ['user', 'admin', 'super_admin'];
+    if (!role || !validRoles.includes(role)) {
+      return res.status(400).json({ success: false, message: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
+    }
     await User.update({ role }, { where: { id: req.params.id } });
     res.json({ success: true, message: 'Role updated successfully' });
   } catch (err) {
@@ -66,8 +72,8 @@ router.put('/update-role/:id', async (req, res) => {
   }
 });
 
-// ── PUT /toggle-status/:id ── Toggle account status (Admin)
-router.put('/toggle-status/:id', async (req, res) => {
+// ── PUT /toggle-status/:id ── Toggle account status (Admin / Super-Admin only)
+router.put('/toggle-status/:id', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
   try {
     const { isActive } = req.body;
     await User.update({ isActive }, { where: { id: req.params.id } });

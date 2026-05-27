@@ -4,6 +4,7 @@ const Product = require('../models/Product');
 const Category = require('../models/Category');
 const { uploadImage } = require('../controllers/uploadController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
+const { checkRole } = require('../middlewares/checkRole');
 
 // Define association for eager loading
 Product.belongsTo(Category, { foreignKey: 'categoryId', as: 'category' });
@@ -38,8 +39,8 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// 3. POST /add ── Add a new product
-router.post('/add', authenticateToken, async (req, res) => {
+// 3. POST /add ── Add a new product (Admin / Super-Admin only)
+router.post('/add', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
     try {
         const { name, description, price, imageUrls, oldPrice, rating, countInStock, categoryId, attributes } = req.body;
 
@@ -75,8 +76,8 @@ router.post('/add', authenticateToken, async (req, res) => {
     }
 });
 
-// 4. PUT /:id ── Update product
-router.put('/:id', authenticateToken, async (req, res) => {
+// 4. PUT /:id ── Update product (Admin / Super-Admin only)
+router.put('/:id', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
     try {
         const { id } = req.params;
         const { name, description, price, imageUrls, oldPrice, rating, countInStock, categoryId, attributes } = req.body;
@@ -111,8 +112,8 @@ router.put('/:id', authenticateToken, async (req, res) => {
     }
 });
 
-// 5. DELETE /:id ── Delete product
-router.delete('/:id', authenticateToken, async (req, res) => {
+// 5. DELETE /:id ── Delete product (Admin / Super-Admin only)
+router.delete('/:id', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
     try {
         const { id } = req.params;
         const result = await Product.destroy({ where: { id } });

@@ -71,6 +71,7 @@ router.post('/verify-otp', async (req, res) => {
         res.json({
             user: {
                 id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName, email: newUser.email,
+                role: newUser.role,
                 phoneNumber: newUser.phoneNumber, birthDate: newUser.birthDate, gender: newUser.gender, profilePicture: newUser.profilePicture
             }
         });
@@ -106,6 +107,7 @@ router.post('/login', async (req, res) => {
             success: true, accessToken, refreshToken,
             user: {
                 id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email,
+                role: user.role,
                 phoneNumber: user.phoneNumber, birthDate: user.birthDate, gender: user.gender, profilePicture: user.profilePicture
             }
         });
