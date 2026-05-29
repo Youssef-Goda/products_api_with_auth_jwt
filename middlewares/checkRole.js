@@ -52,6 +52,11 @@ const checkRole = (allowedRoles) => (req, res, next) => {
     });
   }
 
+  // Owner always bypasses all role checks
+  if (userRole === 'owner') {
+    return next();
+  }
+
   if (!allowedRoles.includes(userRole)) {
     return res.status(403).json({
       success: false,
