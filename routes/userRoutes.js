@@ -40,8 +40,8 @@ router.get('/', authenticateToken, checkRole(['admin', 'super_admin']), async (r
   }
 });
 
-// ── DELETE /:id ── Delete user (Super-Admin only)
-router.delete('/:id', authenticateToken, checkRole(['super_admin']), async (req, res) => {
+// ── DELETE /:id ── Delete user (Admin / Super-Admin only)
+router.delete('/:id', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
   try {
     const result = await User.destroy({ where: { id: req.params.id } });
     if (result) {
@@ -55,12 +55,12 @@ router.delete('/:id', authenticateToken, checkRole(['super_admin']), async (req,
   }
 });
 
-// ── PUT /update-role/:id ── Update role (Super-Admin only)
-// Only super_admin may change roles to prevent privilege escalation.
-router.put('/update-role/:id', authenticateToken, checkRole(['super_admin']), async (req, res) => {
+// ── PUT /update-role/:id ── Update role (Admin / Super-Admin only)
+// Admins and Super-Admins may change roles.
+router.put('/update-role/:id', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
   try {
     const { role } = req.body;
-    const validRoles = ['user', 'admin', 'super_admin'];
+    const validRoles = ['user', 'customer', 'vendor', 'moderator', 'admin', 'owner', 'super_admin'];
     if (!role || !validRoles.includes(role)) {
       return res.status(400).json({ success: false, message: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
     }
