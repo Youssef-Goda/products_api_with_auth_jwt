@@ -52,6 +52,7 @@ router.post('/verify-otp', async (req, res) => {
             role: 'user'
         }, { transaction: t });
 
+        // Generate tokens INSIDE the transaction so refreshToken is persisted atomically
         const accessToken = generateAccessToken(newUser);
         const refreshToken = generateRefreshToken(newUser);
         newUser.refreshToken = refreshToken;
@@ -61,6 +62,7 @@ router.post('/verify-otp', async (req, res) => {
 
         await t.commit();
 
+        // Send welcome email (non-blocking — failure never prevents login)
         try {
             await sendOTP(newUser.email, '', 'welcome');
             console.log("✅ Welcome Email Sent Successfully");
@@ -69,10 +71,14 @@ router.post('/verify-otp', async (req, res) => {
         }
 
         res.json({
+            success: true,
+            accessToken,
+            refreshToken,
             user: {
-                id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName, email: newUser.email,
-                role: newUser.role,
-                phoneNumber: newUser.phoneNumber, birthDate: newUser.birthDate, gender: newUser.gender, profilePicture: newUser.profilePicture
+                id: newUser.id, firstName: newUser.firstName, lastName: newUser.lastName,
+                email: newUser.email, role: newUser.role,
+                phoneNumber: newUser.phoneNumber, birthDate: newUser.birthDate,
+                gender: newUser.gender, profilePicture: newUser.profilePicture
             }
         });
 
@@ -171,8 +177,10 @@ router.post('/reset-password', async (req, res) => {
         res.json({
             success: true, accessToken, refreshToken,
             user: {
-                id: user.id, firstName: user.firstName, lastName: user.lastName, email: user.email,
-                phoneNumber: user.phoneNumber, birthDate: user.birthDate, gender: user.gender, profilePicture: user.profilePicture
+                id: user.id, firstName: user.firstName, lastName: user.lastName,
+                email: user.email, role: user.role,
+                phoneNumber: user.phoneNumber, birthDate: user.birthDate,
+                gender: user.gender, profilePicture: user.profilePicture
             }
         });
     } catch (err) {
