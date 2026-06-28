@@ -37,7 +37,7 @@ router.post('/verify-otp', async (req, res) => {
     const { email, otp } = req.body;
     const t = await sequelize.transaction();
     try {
-        const pendingUser = await PendingUser.findOne({ where: { email } }, { transaction: t });
+        const pendingUser = await PendingUser.findOne({ where: { email }, transaction: t });
 
         if (!pendingUser || pendingUser.otp !== otp || Date.now() > pendingUser.otpExpiry) {
             await t.rollback();
