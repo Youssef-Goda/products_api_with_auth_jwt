@@ -7,7 +7,7 @@ const axios = require('axios');
 const sequelize = require('../config/database');
 const User = require('../models/User');
 const { authenticateToken } = require('../middlewares/authMiddleware');
-const { checkRole } = require('../middlewares/checkRole');
+const { checkRole, ownerPrivilege } = require('../middlewares/checkRole');
 const { sendOTP } = require('../utils/otpHelper');
 
 // ── Multer: memory storage (no disk writes) ─────────────────────────────────
@@ -55,15 +55,21 @@ router.delete('/:id', authenticateToken, checkRole(['super_admin']), async (req,
   }
 });
 
-// ── PUT /update-role/:id ── Update role (Super-Admin only)
-// Only super_admin may change roles to prevent privilege escalation.
-router.put('/update-role/:id', authenticateToken, checkRole(['super_admin']), async (req, res) => {
+// Only admin or owner may change roles.
+// ownerPrivilege prevents non-owners from modifying owner accounts.
+router.put('/update-role/:id', authenticateToken, checkRole(['admin', 'owner']), ownerPrivilege, async (req, res) => {
   try {
     const { role } = req.body;
-    const validRoles = ['user', 'admin', 'super_admin'];
+    const validRoles = ['customer', 'user', 'vendor', 'moderator', 'admin', 'owner'];
     if (!role || !validRoles.includes(role)) {
       return res.status(400).json({ success: false, message: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
     }
+
+    // Admins cannot promote anyone to owner
+    if (role === 'owner' && req.user.role !== 'owner') {
+      return res.status(403).json({ success: false, message: 'Only the Owner can promote users to Owner.' });
+    }
+
     await User.update({ role }, { where: { id: req.params.id } });
     res.json({ success: true, message: 'Role updated successfully' });
   } catch (err) {
