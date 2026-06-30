@@ -24,6 +24,7 @@ const router = express.Router();
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { checkRole } = require('../middlewares/checkRole');
 const { notifyOrderStatusChanged } = require('../services/orderNotificationService');
+const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
 const { createClient } = require('@supabase/supabase-js');
 
 // ── Supabase admin client (bypass RLS for server-side ops) ──────────────────
@@ -150,6 +151,21 @@ router.post('/', authenticateToken, async (req, res) => {
       .single();
 
     if (fetchErr) throw fetchErr;
+
+    // 5️⃣  Send order confirmation email (fire-and-forget)
+    try {
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('email, firstName')
+        .eq('id', userId)
+        .maybeSingle();
+      if (userRow?.email) {
+        sendOrderConfirmationEmail(userRow.email, fullOrder, userRow.firstName || 'Customer')
+          .catch(e => console.warn('⚠️ Order email skipped:', e.message));
+      }
+    } catch (emailErr) {
+      console.warn('⚠️ Could not send order email:', emailErr.message);
+    }
 
     return res.status(201).json({ success: true, data: fullOrder });
   } catch (err) {

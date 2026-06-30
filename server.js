@@ -16,6 +16,7 @@ const orderRoutes = require('./routes/orderRoutes');
 const addressRoutes = require('./routes/addressRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const ownerRoutes        = require('./routes/ownerRoutes');
+const bannerRoutes       = require('./routes/bannerRoutes');
 
 const sequelize = require('./config/database');
 
@@ -25,6 +26,7 @@ require('./models/CartEvent');
 require('./models/Category');
 require('./models/Product');  
 require('./models/User');
+require('./models/Banner');
 
 dotenv.config();
 const app = express();
@@ -59,6 +61,7 @@ app.use('/api/orders', orderRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/owner',         ownerRoutes);         // God-Mode — owner only
+app.use('/api/banners',       bannerRoutes);
 
 const PORT = process.env.PORT || 5000;
 
