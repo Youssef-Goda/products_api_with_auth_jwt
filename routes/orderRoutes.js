@@ -105,13 +105,17 @@ router.post('/', authenticateToken, async (req, res) => {
     if (userErr) throw userErr;
 
     const userRole = (userRow?.role || '').toLowerCase();
-    // Only customers (or default/unassigned role) have the limit of 3 pending/processing orders
-    if (userRole === 'customer' || userRole === 'user' || !userRole) {
+    // Only regular users/customers are subject to the 3-active-order limit.
+    // Admins, owners and moderators are exempt.
+    const isPrivileged = ['admin', 'owner', 'moderator', 'super_admin'].includes(userRole);
+    if (!isPrivileged) {
+      // Count orders that are still "in-flight" (not yet delivered or cancelled)
+      const activeStatuses = ['pending', 'confirmed', 'processing', 'shipped'];
       const { data: activeOrders, error: activeErr } = await supabase
         .from('orders')
         .select('id')
         .eq('user_id', userId)
-        .in('status', ['pending', 'processing']);
+        .in('status', activeStatuses);
 
       if (activeErr) throw activeErr;
 
