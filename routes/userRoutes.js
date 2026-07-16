@@ -60,7 +60,7 @@ router.delete('/:id', authenticateToken, checkRole(['super_admin']), async (req,
 router.put('/update-role/:id', authenticateToken, checkRole(['admin', 'owner']), ownerPrivilege, async (req, res) => {
   try {
     const { role } = req.body;
-    const validRoles = ['customer', 'user', 'vendor', 'moderator', 'admin', 'owner'];
+    const validRoles = ['user', 'customer', 'vendor', 'moderator', 'admin', 'owner'];
     if (!role || !validRoles.includes(role)) {
       return res.status(400).json({ success: false, message: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
     }
@@ -68,6 +68,18 @@ router.put('/update-role/:id', authenticateToken, checkRole(['admin', 'owner']),
     // Admins cannot promote anyone to owner
     if (role === 'owner' && req.user.role !== 'owner') {
       return res.status(403).json({ success: false, message: 'Only the Owner can promote users to Owner.' });
+    }
+
+    // Peer-admin protection: admins cannot modify another admin's role
+    if (req.user.role === 'admin') {
+      const targetUser = await User.findByPk(req.params.id);
+      if (!targetUser) {
+        return res.status(404).json({ success: false, message: 'User not found.' });
+      }
+      const targetRole = (targetUser.role || '').toLowerCase();
+      if (targetRole === 'admin' || targetRole === 'owner') {
+        return res.status(403).json({ success: false, message: 'Admins cannot modify the role of another Admin or Owner.' });
+      }
     }
 
     await User.update({ role }, { where: { id: req.params.id } });

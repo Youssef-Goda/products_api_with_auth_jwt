@@ -95,6 +95,34 @@ router.post('/', authenticateToken, async (req, res) => {
   console.log(`📦 [Orders] POST payload: userId=${userId}, items=${items.length}, total=${total}`);
 
   try {
+    // 0️⃣ Fetch user's role to determine velocity check permissions
+    const { data: userRow, error: userErr } = await supabase
+      .from('users')
+      .select('role')
+      .eq('id', userId)
+      .maybeSingle();
+
+    if (userErr) throw userErr;
+
+    const userRole = (userRow?.role || '').toLowerCase();
+    // Only customers (or default/unassigned role) have the limit of 3 pending/processing orders
+    if (userRole === 'customer' || userRole === 'user' || !userRole) {
+      const { data: activeOrders, error: activeErr } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('user_id', userId)
+        .in('status', ['pending', 'processing']);
+
+      if (activeErr) throw activeErr;
+
+      if (activeOrders && activeOrders.length >= 3) {
+        return res.status(400).json({
+          success: false,
+          message: 'عذراً، لديك طلبات قيد التنفيذ بالفعل، يرجى انتظار توصيلها أولاً'
+        });
+      }
+    }
+
     // 1️⃣  Insert the order row
     const { data: orderRow, error: orderErr } = await supabase
       .from('orders')
@@ -284,6 +312,55 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
     return res.json({ success: true, message: `Order status updated to "${status}"`, data: updated });
   } catch (err) {
     console.error('❌ Update Order Status Error:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// POST /api/orders/:id/cancel  — User cancels their own order (allowed ONLY if 'pending')
+// ══════════════════════════════════════════════════════════════════════════════
+router.post('/:id/cancel', authenticateToken, async (req, res) => {
+  const userId = await resolveUserId(req, res);
+  if (!userId) return;
+
+  try {
+    // 1️⃣ Fetch the order to verify ownership and status
+    const { data: order, error: fetchErr } = await supabase
+      .from('orders')
+      .select('id, user_id, status')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (fetchErr) throw fetchErr;
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found.' });
+    }
+
+    // Check ownership (only owner of order can cancel)
+    if (order.user_id !== userId) {
+      return res.status(403).json({ success: false, message: 'You are not authorized to cancel this order.' });
+    }
+
+    // Check status — user can cancel if pending or confirmed (before processing starts)
+    const cancellableStatuses = ['pending', 'confirmed'];
+    if (!cancellableStatuses.includes(order.status)) {
+      return res.status(400).json({ success: false, message: `Cannot cancel an order that is already "${order.status}". Only pending or confirmed orders can be cancelled.` });
+    }
+
+    // 2️⃣ Update the order status to cancelled
+    const { data: updated, error: updateErr } = await supabase
+      .from('orders')
+      .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .select('*, order_items(*), shipping_addresses(*)')
+      .single();
+
+    if (updateErr) throw updateErr;
+
+    console.log(`✅ Order ${order.id} was cancelled by user.`);
+    return res.json({ success: true, message: 'Order cancelled successfully', data: updated });
+  } catch (err) {
+    console.error('❌ Cancel Order Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
