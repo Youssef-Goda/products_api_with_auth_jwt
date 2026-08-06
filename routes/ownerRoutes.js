@@ -26,18 +26,27 @@ const supabaseAdmin = createClient(
 const ownerOnly = [authenticateToken, checkRole(['owner'])];
 
 // ── GET /api/owner/financials/summary ─────────────────────────────────────────
-// Net revenue, vendor payouts, platform profit
+// Net revenue, vendor payouts, platform profit, and total counts
 router.get('/financials/summary', ...ownerOnly, async (req, res) => {
   try {
-    const { data: orders, error } = await supabaseAdmin
-      .from('orders')
-      .select('total_amount, vendor_payout, status')
-      .eq('status', 'delivered');
+    const [
+      { data: deliveredOrders, error: err1 },
+      { count: totalOrders, error: err2 },
+      { count: totalUsers, error: err3 },
+      { count: activeVendors, error: err4 }
+    ] = await Promise.all([
+      supabaseAdmin.from('orders').select('total_amount, vendor_payout').eq('status', 'delivered'),
+      supabaseAdmin.from('orders').select('*', { count: 'exact', head: true }),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }),
+      supabaseAdmin.from('users').select('*', { count: 'exact', head: true }).eq('role', 'vendor'),
+    ]);
 
-    if (error) throw error;
+    if (err1 || err2 || err3 || err4) {
+      throw err1 || err2 || err3 || err4;
+    }
 
-    const totalRevenue = orders.reduce((s, o) => s + (parseFloat(o.total_amount) || 0), 0);
-    const totalPayouts = orders.reduce((s, o) => s + (parseFloat(o.vendor_payout) || 0), 0);
+    const totalRevenue = deliveredOrders.reduce((s, o) => s + (parseFloat(o.total_amount) || 0), 0);
+    const totalPayouts = deliveredOrders.reduce((s, o) => s + (parseFloat(o.vendor_payout) || 0), 0);
     const netProfit    = totalRevenue - totalPayouts;
 
     res.json({
@@ -46,7 +55,10 @@ router.get('/financials/summary', ...ownerOnly, async (req, res) => {
         totalRevenue:  totalRevenue.toFixed(2),
         totalPayouts:  totalPayouts.toFixed(2),
         netProfit:     netProfit.toFixed(2),
-        ordersCount:   orders.length,
+        deliveredCount: deliveredOrders.length,
+        totalOrders:   totalOrders || 0,
+        totalUsers:    totalUsers || 0,
+        activeVendors: activeVendors || 0,
       },
     });
   } catch (err) {
