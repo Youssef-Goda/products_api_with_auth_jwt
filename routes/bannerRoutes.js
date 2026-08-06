@@ -14,7 +14,7 @@ router.get('/', async (req, res) => {
   try {
     const { data, error } = await supabase
       .from('banners')
-      .select('id, image_url, title, subtitle')
+      .select('id, image_url, title, subtitle, link_url')
       .eq('is_active', true)
       .order('created_at', { ascending: false });
 
@@ -33,8 +33,9 @@ router.post('/', authenticateToken, async (req, res) => {
     return res.status(403).json({ success: false, message: 'Forbidden' });
   }
 
-  const { imageUrl, image_url, title = '', subtitle = '' } = req.body;
+  const { imageUrl, image_url, title = '', subtitle = '', linkUrl, link_url } = req.body;
   const url = imageUrl || image_url;
+  const link = linkUrl || link_url;
 
   if (!url || url.trim() === '') {
     return res.status(400).json({ success: false, message: 'imageUrl is required' });
@@ -47,6 +48,7 @@ router.post('/', authenticateToken, async (req, res) => {
         image_url: url.trim(),
         title: title.trim() || null,
         subtitle: subtitle.trim() || null,
+        link_url: link ? link.trim() : null,
         is_active: true,
         created_by: req.user.id,
       })
@@ -58,7 +60,8 @@ router.post('/', authenticateToken, async (req, res) => {
     // Log activity
     await logActivity(req.user.id, 'CREATE_BANNER', 'banner', data.id, {
       title: data.title || 'Untitled Banner',
-      imageUrl: data.image_url
+      imageUrl: data.image_url,
+      linkUrl: data.link_url
     });
 
     console.log(`✅ [Banners] Banner created by ${req.user.email}`);
