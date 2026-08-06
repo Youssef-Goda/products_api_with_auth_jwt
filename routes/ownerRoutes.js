@@ -1,7 +1,7 @@
 /**
  * ownerRoutes.js
  * ─────────────────────────────────────────────────────────────────────────────
- * God-Mode endpoints — accessible by the OWNER role only.
+ * Owner Control Panel endpoints — accessible by the OWNER role only.
  * All routes require a valid JWT with role === 'owner'.
  *
  * Mount in server.js:

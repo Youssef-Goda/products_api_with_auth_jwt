@@ -56,11 +56,11 @@ router.post('/add', authenticateToken, checkRole(['admin', 'super_admin']), asyn
         const newProduct = await Product.create({
             name,
             description,
-            price: parseFloat(price),
+            price: (price !== undefined && price !== null && price !== '') ? parseFloat(price) : 0.0,
             imageUrls: imageUrls || [],
-            oldPrice: oldPrice ? parseFloat(oldPrice) : null,
-            rating: rating ? parseFloat(rating) : 0.0,
-            countInStock: countInStock ? parseInt(countInStock) : 0,
+            oldPrice: (oldPrice !== undefined && oldPrice !== null && oldPrice !== '') ? parseFloat(oldPrice) : null,
+            rating: (rating !== undefined && rating !== null && rating !== '') ? parseFloat(rating) : 0.0,
+            countInStock: (countInStock !== undefined && countInStock !== null && countInStock !== '') ? parseInt(countInStock) : 0,
             categoryId: categoryId || null,
             attributes: attributes || {}
         });
@@ -105,14 +105,14 @@ router.put('/:id', authenticateToken, checkRole(['admin', 'super_admin']), async
         };
 
         await product.update({
-            name,
-            description,
-            price: parseFloat(price),
-            imageUrls: imageUrls ?? product.imageUrls,
-            oldPrice: oldPrice !== undefined ? (oldPrice ? parseFloat(oldPrice) : null) : product.oldPrice,
-            rating: rating !== undefined ? parseFloat(rating) : product.rating,
-            countInStock: countInStock !== undefined ? parseInt(countInStock) : product.countInStock,
-            categoryId: categoryId || product.categoryId,
+            name: name !== undefined ? name : product.name,
+            description: description !== undefined ? description : product.description,
+            price: (price !== undefined && price !== null && price !== '') ? parseFloat(price) : product.price,
+            imageUrls: imageUrls !== undefined ? imageUrls : product.imageUrls,
+            oldPrice: oldPrice !== undefined ? (oldPrice !== null && oldPrice !== '' ? parseFloat(oldPrice) : null) : product.oldPrice,
+            rating: rating !== undefined ? (rating !== null && rating !== '' ? parseFloat(rating) : 0.0) : product.rating,
+            countInStock: countInStock !== undefined ? (countInStock !== null && countInStock !== '' ? parseInt(countInStock) : 0) : product.countInStock,
+            categoryId: categoryId !== undefined ? (categoryId || null) : product.categoryId,
             attributes: attributes !== undefined ? attributes : product.attributes
         });
 

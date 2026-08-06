@@ -61,7 +61,7 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/orders', orderRoutes);
 app.use('/api/addresses', addressRoutes);
 app.use('/api/notifications', notificationRoutes);
-app.use('/api/owner',         ownerRoutes);         // God-Mode — owner only
+app.use('/api/owner',         ownerRoutes);         // Owner Control — owner only
 app.use('/api/banners',       bannerRoutes);
 
 const PORT = process.env.PORT || 5000;
