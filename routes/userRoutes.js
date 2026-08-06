@@ -9,6 +9,7 @@ const User = require('../models/User');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { checkRole, ownerPrivilege } = require('../middlewares/checkRole');
 const { sendOTP } = require('../utils/otpHelper');
+const { logActivity } = require('../services/activityLogger');
 
 // ── Multer: memory storage (no disk writes) ─────────────────────────────────
 const _upload = multer({
@@ -43,8 +44,13 @@ router.get('/', authenticateToken, checkRole(['admin', 'super_admin']), async (r
 // ── DELETE /:id ── Delete user (Super-Admin only)
 router.delete('/:id', authenticateToken, checkRole(['super_admin']), async (req, res) => {
   try {
+    const user = await User.findByPk(req.params.id);
+    if (!user) return res.status(404).json({ success: false, message: 'User not found' });
+
+    const userEmail = user.email;
     const result = await User.destroy({ where: { id: req.params.id } });
     if (result) {
+      await logActivity(req.user.id, 'DELETE_USER', 'user', req.params.id, { email: userEmail });
       res.json({ success: true, message: 'User deleted successfully' });
     } else {
       res.status(404).json({ success: false, message: 'User not found' });
@@ -70,19 +76,29 @@ router.put('/update-role/:id', authenticateToken, checkRole(['admin', 'owner']),
       return res.status(403).json({ success: false, message: 'Only the Owner can promote users to Owner.' });
     }
 
+    const targetUser = await User.findByPk(req.params.id);
+    if (!targetUser) {
+      return res.status(404).json({ success: false, message: 'User not found.' });
+    }
+
     // Peer-admin protection: admins cannot modify another admin's role
     if (req.user.role === 'admin') {
-      const targetUser = await User.findByPk(req.params.id);
-      if (!targetUser) {
-        return res.status(404).json({ success: false, message: 'User not found.' });
-      }
       const targetRole = (targetUser.role || '').toLowerCase();
       if (targetRole === 'admin' || targetRole === 'owner') {
         return res.status(403).json({ success: false, message: 'Admins cannot modify the role of another Admin or Owner.' });
       }
     }
 
+    const oldRole = targetUser.role;
     await User.update({ role }, { where: { id: req.params.id } });
+
+    // Log activity
+    await logActivity(req.user.id, 'UPDATE_USER_ROLE', 'user', req.params.id, {
+      email: targetUser.email,
+      oldRole,
+      newRole: role
+    });
+
     res.json({ success: true, message: 'Role updated successfully' });
   } catch (err) {
     console.error('❌ Update Role Error:', err);
@@ -94,7 +110,17 @@ router.put('/update-role/:id', authenticateToken, checkRole(['admin', 'owner']),
 router.put('/toggle-status/:id', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
   try {
     const { isActive } = req.body;
+    const targetUser = await User.findByPk(req.params.id);
+    if (!targetUser) return res.status(404).json({ success: false, message: 'User not found' });
+
     await User.update({ isActive }, { where: { id: req.params.id } });
+
+    // Log activity
+    await logActivity(req.user.id, 'TOGGLE_USER_STATUS', 'user', req.params.id, {
+      email: targetUser.email,
+      isActive
+    });
+
     res.json({ success: true, message: 'Account status updated' });
   } catch (err) {
     console.error('❌ Toggle Error:', err);

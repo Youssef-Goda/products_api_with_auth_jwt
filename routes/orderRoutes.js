@@ -26,6 +26,7 @@ const { checkRole } = require('../middlewares/checkRole');
 const { notifyOrderStatusChanged } = require('../services/orderNotificationService');
 const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
 const { createClient } = require('@supabase/supabase-js');
+const { logActivity } = require('../services/activityLogger');
 
 // ── Supabase admin client (bypass RLS for server-side ops) ──────────────────
 const supabase = createClient(
@@ -306,6 +307,12 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
 
     if (updateError) throw updateError;
 
+    // Log activity
+    await logActivity(req.user.id, 'UPDATE_ORDER_STATUS', 'order', req.params.id, {
+      oldStatus: order.status,
+      newStatus: status
+    });
+
     console.log(`✅ Order ${req.params.id} status updated: ${order.status} → ${status}`);
 
     // ── 🔔 Fire push notification (non-blocking) ──────────────────────────
@@ -360,6 +367,12 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
       .single();
 
     if (updateErr) throw updateErr;
+
+    // Log activity
+    await logActivity(userId, 'CANCEL_ORDER', 'order', req.params.id, {
+      cancelledBy: userId === order.user_id ? 'user' : 'admin',
+      previousStatus: order.status
+    });
 
     console.log(`✅ Order ${order.id} was cancelled by user.`);
     return res.json({ success: true, message: 'Order cancelled successfully', data: updated });

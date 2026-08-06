@@ -1,5 +1,6 @@
 const Category = require('../models/Category');
 const { Op } = require('sequelize');
+const { logActivity } = require('../services/activityLogger');
 
 // Helper: generate slug from name
 const generateSlug = (name) =>
@@ -78,6 +79,10 @@ const createCategory = async (req, res) => {
             iconUrl: iconUrl || null,
             parentId: parentId || null
         });
+
+        // Log activity
+        await logActivity(req.user.id, 'CREATE_CATEGORY', 'category', category.id, { name: category.name });
+
         res.status(201).json({ success: true, data: category });
     } catch (err) {
         console.error('❌ Create Category Error:', err);
@@ -102,6 +107,8 @@ const updateCategory = async (req, res) => {
             if (!parent) return res.status(400).json({ success: false, message: 'Parent category not found' });
         }
 
+        const previousData = { name: category.name, iconUrl: category.iconUrl, parentId: category.parentId };
+
         const updates = {};
         if (name) {
             updates.name = name;
@@ -113,6 +120,13 @@ const updateCategory = async (req, res) => {
         if (parentId !== undefined) updates.parentId = parentId || null;
 
         await category.update(updates);
+
+        // Log activity
+        await logActivity(req.user.id, 'UPDATE_CATEGORY', 'category', category.id, {
+            name: category.name,
+            changes: { previous: previousData, current: updates }
+        });
+
         res.json({ success: true, data: category });
     } catch (err) {
         console.error('❌ Update Category Error:', err);
@@ -132,7 +146,12 @@ const deleteCategory = async (req, res) => {
             { where: { parentId: req.params.id } }
         );
 
+        const categoryName = category.name;
         await category.destroy();
+
+        // Log activity
+        await logActivity(req.user.id, 'DELETE_CATEGORY', 'category', req.params.id, { name: categoryName });
+
         res.json({ success: true, message: 'Category deleted successfully' });
     } catch (err) {
         console.error('❌ Delete Category Error:', err);

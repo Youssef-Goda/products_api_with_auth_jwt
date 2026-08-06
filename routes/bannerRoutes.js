@@ -1,28 +1,8 @@
-/**
- * bannerRoutes.js
- * Admin/Moderator can add or delete promotional banners.
- * Customers can view active banners.
- *
- * Register in server.js:
- *   const bannerRoutes = require('./routes/bannerRoutes');
- *   app.use('/api/banners', bannerRoutes);
- *
- * Supabase table (create if not exists):
- *   CREATE TABLE banners (
- *     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
- *     image_url   TEXT NOT NULL,
- *     title       TEXT,
- *     subtitle    TEXT,
- *     is_active   BOOLEAN DEFAULT true,
- *     created_by  UUID REFERENCES users(id),
- *     created_at  TIMESTAMPTZ DEFAULT now()
- *   );
- */
-
 const express = require('express');
 const router = express.Router();
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { createClient } = require('@supabase/supabase-js');
+const { logActivity } = require('../services/activityLogger');
 
 const supabase = createClient(
   process.env.SUPABASE_URL,
@@ -74,6 +54,13 @@ router.post('/', authenticateToken, async (req, res) => {
       .single();
 
     if (error) throw error;
+
+    // Log activity
+    await logActivity(req.user.id, 'CREATE_BANNER', 'banner', data.id, {
+      title: data.title || 'Untitled Banner',
+      imageUrl: data.image_url
+    });
+
     console.log(`✅ [Banners] Banner created by ${req.user.email}`);
     return res.status(201).json({ success: true, data });
   } catch (err) {
@@ -91,12 +78,28 @@ router.delete('/:id', authenticateToken, async (req, res) => {
 
   const { id } = req.params;
   try {
+    // Fetch banner title for logging
+    const { data: banner } = await supabase
+      .from('banners')
+      .select('title, image_url')
+      .eq('id', id)
+      .maybeSingle();
+
+    const bannerTitle = banner?.title || 'Untitled Banner';
+
     const { error } = await supabase
       .from('banners')
       .delete()
       .eq('id', id);
 
     if (error) throw error;
+
+    // Log activity
+    await logActivity(req.user.id, 'DELETE_BANNER', 'banner', id, {
+      title: bannerTitle,
+      imageUrl: banner?.image_url
+    });
+
     console.log(`🗑️ [Banners] Banner ${id} deleted by ${req.user.email}`);
     return res.json({ success: true, message: 'Banner deleted.' });
   } catch (err) {

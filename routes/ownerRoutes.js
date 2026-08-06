@@ -13,6 +13,8 @@ const router = require('express').Router();
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { checkRole }         = require('../middlewares/checkRole');
 const { createClient }      = require('@supabase/supabase-js');
+const ActivityLog           = require('../models/ActivityLog');
+const User                  = require('../models/User');
 
 // Supabase admin client for unrestricted reads
 const supabaseAdmin = createClient(
@@ -80,23 +82,29 @@ router.get('/vendor-balances', ...ownerOnly, async (req, res) => {
 });
 
 // ── GET /api/owner/audit-log ──────────────────────────────────────────────────
-// Admin & owner activity log (requires an `audit_logs` table)
+// Admin & owner activity log using Sequelize
 router.get('/audit-log', ...ownerOnly, async (req, res) => {
   try {
     const limit  = parseInt(req.query.limit)  || 50;
     const offset = parseInt(req.query.offset) || 0;
 
-    const { data, error, count } = await supabaseAdmin
-      .from('audit_logs')
-      .select('*', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(offset, offset + limit - 1);
+    const { rows: logs, count } = await ActivityLog.findAndCountAll({
+      limit,
+      offset,
+      order: [['created_at', 'DESC']],
+      include: [
+        {
+          model: User,
+          as: 'user',
+          attributes: ['id', 'firstName', 'lastName', 'email', 'role']
+        }
+      ]
+    });
 
-    if (error) throw error;
-    res.json({ success: true, data, total: count });
+    res.json({ success: true, data: logs, total: count });
   } catch (err) {
-    // Graceful: table may not exist yet
-    res.json({ success: true, data: [], total: 0, note: 'audit_logs table not yet created.' });
+    console.error('❌ Audit-Log fetch error:', err.message);
+    res.status(500).json({ success: false, message: err.message });
   }
 });
 

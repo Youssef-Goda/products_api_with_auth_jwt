@@ -27,6 +27,7 @@ require('./models/Category');
 require('./models/Product');  
 require('./models/User');
 require('./models/Banner');
+require('./models/ActivityLog');
 
 dotenv.config();
 const app = express();

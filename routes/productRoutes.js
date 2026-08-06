@@ -5,6 +5,7 @@ const Category = require('../models/Category');
 const { uploadImage } = require('../controllers/uploadController');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { checkRole } = require('../middlewares/checkRole');
+const { logActivity } = require('../services/activityLogger');
 
 // Define association for eager loading
 Product.belongsTo(Category, { foreignKey: 'categoryId', as: 'category' });
@@ -64,6 +65,13 @@ router.post('/add', authenticateToken, checkRole(['admin', 'super_admin']), asyn
             attributes: attributes || {}
         });
 
+        // Log the activity
+        await logActivity(req.user.id, 'CREATE_PRODUCT', 'product', newProduct.id, {
+            name: newProduct.name,
+            price: newProduct.price,
+            countInStock: newProduct.countInStock
+        });
+
         // Return with category info attached
         const result = await Product.findByPk(newProduct.id, {
             include: [{ model: Category, as: 'category', attributes: ['id', 'name', 'slug'] }]
@@ -90,6 +98,12 @@ router.put('/:id', authenticateToken, checkRole(['admin', 'super_admin']), async
             if (!category) return res.status(400).json({ error: 'Category not found' });
         }
 
+        const previousData = {
+            name: product.name,
+            price: product.price,
+            countInStock: product.countInStock
+        };
+
         await product.update({
             name,
             description,
@@ -100,6 +114,19 @@ router.put('/:id', authenticateToken, checkRole(['admin', 'super_admin']), async
             countInStock: countInStock !== undefined ? parseInt(countInStock) : product.countInStock,
             categoryId: categoryId || product.categoryId,
             attributes: attributes !== undefined ? attributes : product.attributes
+        });
+
+        // Log the activity
+        await logActivity(req.user.id, 'UPDATE_PRODUCT', 'product', id, {
+            name: product.name,
+            changes: {
+                previous: previousData,
+                current: {
+                    name: product.name,
+                    price: product.price,
+                    countInStock: product.countInStock
+                }
+            }
         });
 
         const result = await Product.findByPk(id, {
@@ -116,8 +143,15 @@ router.put('/:id', authenticateToken, checkRole(['admin', 'super_admin']), async
 router.delete('/:id', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
     try {
         const { id } = req.params;
-        const result = await Product.destroy({ where: { id } });
-        if (!result) return res.status(404).json({ error: 'Product not found' });
+        const product = await Product.findByPk(id);
+        if (!product) return res.status(404).json({ error: 'Product not found' });
+
+        const productName = product.name;
+        await product.destroy();
+
+        // Log the activity
+        await logActivity(req.user.id, 'DELETE_PRODUCT', 'product', id, { name: productName });
+
         res.json({ success: true, message: 'Product deleted' });
     } catch (error) {
         res.status(500).json({ error: error.message });
