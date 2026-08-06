@@ -17,6 +17,7 @@ const addressRoutes = require('./routes/addressRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 const ownerRoutes        = require('./routes/ownerRoutes');
 const bannerRoutes       = require('./routes/bannerRoutes');
+const analyticsRoutes    = require('./routes/analyticsRoutes');
 
 const sequelize = require('./config/database');
 
@@ -63,6 +64,7 @@ app.use('/api/addresses', addressRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/owner',         ownerRoutes);         // Owner Control — owner only
 app.use('/api/banners',       bannerRoutes);
+app.use('/api/analytics',     analyticsRoutes);
 
 const PORT = process.env.PORT || 5000;
 
