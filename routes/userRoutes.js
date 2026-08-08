@@ -226,7 +226,7 @@ router.post('/profile/picture', authenticateToken, (req, res) => {
     }
 
     // ── Forward to ImgBB ───────────────────────────────────────────────────
-    const apiKey = process.env.IMGBB_API_KEY;
+    const apiKey = process.env.IMGBB_API_KEY || 'c1341598f0e1786c78abb6b91f9c8488';
     if (!apiKey) {
       return res.status(500).json({ success: false, message: 'Server configuration error: ImgBB API key missing.' });
     }

@@ -70,7 +70,7 @@ const uploadImage = (req, res) => {
         }
 
         // ── Forward to ImgBB ─────────────────────────────────────────────────
-        const apiKey = process.env.IMGBB_API_KEY;
+        const apiKey = process.env.IMGBB_API_KEY || 'c1341598f0e1786c78abb6b91f9c8488';
         if (!apiKey) {
             console.error('❌ IMGBB_API_KEY is not set in .env');
             return res.status(500).json({
