@@ -260,6 +260,14 @@ router.get('/:id', authenticateToken, async (req, res) => {
     if (error) throw error;
     if (!data) return res.status(404).json({ success: false, message: 'Order not found' });
 
+    // Object-Level Authorization Check (IDOR Guard)
+    const userRole = (req.user?.role || '').toLowerCase();
+    const isElevated = ['admin', 'owner', 'moderator', 'super_admin'].includes(userRole);
+
+    if (data.user_id !== req.user.id && !isElevated) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order' });
+    }
+
     return res.json({ success: true, data });
   } catch (err) {
     console.error('❌ Fetch Order Error:', err.message);
