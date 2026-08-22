@@ -15,6 +15,7 @@ const { checkRole }         = require('../middlewares/checkRole');
 const { createClient }      = require('@supabase/supabase-js');
 const ActivityLog           = require('../models/ActivityLog');
 const User                  = require('../models/User');
+const settingsController    = require('../controllers/settingsController');
 
 // Supabase admin client for unrestricted reads
 const supabaseAdmin = createClient(
@@ -151,37 +152,11 @@ router.get('/growth-metrics', ...ownerOnly, async (req, res) => {
 
 // ── GET /api/owner/settings ───────────────────────────────────────────────────
 // GET global platform settings
-router.get('/settings', ...ownerOnly, async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('platform_settings')
-      .select('*')
-      .limit(1)
-      .maybeSingle();
-
-    if (error) throw error;
-    res.json({ success: true, data: data ?? {} });
-  } catch (err) {
-    res.json({ success: true, data: {}, note: 'platform_settings table not yet created.' });
-  }
-});
+router.get('/settings', ...ownerOnly, settingsController.getPublicSettings);
 
 // ── PATCH /api/owner/settings ─────────────────────────────────────────────────
-// Update global platform settings
-router.patch('/settings', ...ownerOnly, async (req, res) => {
-  try {
-    const { data, error } = await supabaseAdmin
-      .from('platform_settings')
-      .upsert({ id: 1, ...req.body, updated_at: new Date().toISOString() })
-      .select()
-      .single();
-
-    if (error) throw error;
-    res.json({ success: true, data });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+// Update global platform settings (Owner only)
+router.patch('/settings', ...ownerOnly, settingsController.updateOwnerSettings);
 
 // ── GET /api/owner/promote/:userId ────────────────────────────────────────────
 // Promote or demote a user's role (owner only)

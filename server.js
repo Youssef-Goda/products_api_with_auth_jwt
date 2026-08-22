@@ -19,6 +19,7 @@ const ownerRoutes        = require('./routes/ownerRoutes');
 const bannerRoutes       = require('./routes/bannerRoutes');
 const analyticsRoutes    = require('./routes/analyticsRoutes');
 const moderationRoutes   = require('./routes/moderationRoutes');
+const settingsRoutes     = require('./routes/settingsRoutes');
 
 const sequelize = require('./config/database');
 
@@ -30,13 +31,14 @@ require('./models/Product');
 require('./models/User');
 require('./models/Banner');
 require('./models/ActivityLog');
+require('./models/StoreSetting');
 
 dotenv.config();
 const app = express();
 
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
@@ -67,6 +69,12 @@ app.use('/api/owner',         ownerRoutes);         // Owner Control — owner o
 app.use('/api/banners',       bannerRoutes);
 app.use('/api/analytics',     analyticsRoutes);
 app.use('/api/moderation',    moderationRoutes);
+app.use('/api/settings',      settingsRoutes);
+
+// ── API v1 Aliases ────────────────────────────────────────────────────────────
+app.use('/api/v1/settings',   settingsRoutes);
+app.use('/api/v1/owner',      ownerRoutes);
+app.use('/api/v1/banners',    bannerRoutes);
 
 const PORT = process.env.PORT || 5000;
 
