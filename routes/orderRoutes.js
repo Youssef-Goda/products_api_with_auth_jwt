@@ -24,7 +24,6 @@ const router = express.Router();
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { checkRole } = require('../middlewares/checkRole');
 const { notifyOrderStatusChanged } = require('../services/orderNotificationService');
-const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
 const { createClient } = require('@supabase/supabase-js');
 const { logActivity } = require('../services/activityLogger');
 
@@ -128,7 +127,7 @@ router.post('/', authenticateToken, async (req, res) => {
       }
     }
 
-    // 1️⃣  Insert the order row
+    // 1️⃣  Insert the order row with initial pending status
     const { data: orderRow, error: orderErr } = await supabase
       .from('orders')
       .insert({
@@ -136,6 +135,7 @@ router.post('/', authenticateToken, async (req, res) => {
         shipping_address_id,
         payment_method,
         status: 'pending',
+        payment_status: 'pending',
         subtotal,
         tax,
         total,
@@ -146,7 +146,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     if (orderErr) throw orderErr;
     const orderId = orderRow.id;
-    console.log(`✅ [Orders] Order row created: ${orderId}`);
+    console.log(`✅ [Orders] Order row created (pending): ${orderId}`);
 
     // 2️⃣  Bulk-insert order_items
     const itemsPayload = items.map((item) => ({
@@ -164,16 +164,18 @@ router.post('/', authenticateToken, async (req, res) => {
     if (itemsErr) throw itemsErr;
     console.log(`✅ [Orders] ${itemsPayload.length} order_items inserted`);
 
-    // 3️⃣  Clear the user's cart (server-side, so all devices sync)
-    const { error: cartErr } = await supabase
-      .from('cart_items')
-      .delete()
-      .eq('user_id', userId);
-    if (cartErr) {
-      // Non-fatal: log but don't abort the order
-      console.warn(`⚠️ [Orders] Cart clear failed for user ${userId}: ${cartErr.message}`);
-    } else {
-      console.log(`🛒 [Orders] Cart cleared for user ${userId}`);
+    // 3️⃣  Clear cart immediately only for Cash on Delivery (COD) orders
+    // For online Paymob orders, cart is preserved until payment is confirmed by webhook
+    if (payment_method === 'cod') {
+      const { error: cartErr } = await supabase
+        .from('cart_items')
+        .delete()
+        .eq('user_id', userId);
+      if (cartErr) {
+        console.warn(`⚠️ [Orders] Cart clear failed for user ${userId}: ${cartErr.message}`);
+      } else {
+        console.log(`🛒 [Orders] Cart cleared for user ${userId} (COD)`);
+      }
     }
 
     // 4️⃣  Fetch full order (with items + address) to return
@@ -185,20 +187,8 @@ router.post('/', authenticateToken, async (req, res) => {
 
     if (fetchErr) throw fetchErr;
 
-    // 5️⃣  Send order confirmation email (fire-and-forget)
-    try {
-      const { data: userRow } = await supabase
-        .from('users')
-        .select('email, firstName')
-        .eq('id', userId)
-        .maybeSingle();
-      if (userRow?.email) {
-        sendOrderConfirmationEmail(userRow.email, fullOrder, userRow.firstName || 'Customer')
-          .catch(e => console.warn('⚠️ Order email skipped:', e.message));
-      }
-    } catch (emailErr) {
-      console.warn('⚠️ Could not send order email:', emailErr.message);
-    }
+    // Note: Confirmation email is NOT sent here.
+    // For Paymob payments, confirmation email is triggered ONLY by the Webhook on successful payment.
 
     return res.status(201).json({ success: true, data: fullOrder });
   } catch (err) {

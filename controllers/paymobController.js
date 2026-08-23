@@ -22,6 +22,7 @@
 const crypto    = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const { logActivity }  = require('../services/activityLogger');
+const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
 const {
   getAuthToken,
   registerOrder,
@@ -472,10 +473,48 @@ async function handleWebhook(req, res) {
 
   if (updateErr) {
     console.error(`❌ [paymobWebhook] DB update failed for order ${internalOrderId}: ${updateErr.message}`);
-    return res.status(200).json({ success: true, message: 'Acknowledged (DB update failed).' });
+  // ── 8. On successful payment: clear cart & send confirmation email ────────
+  if (finalStatus === 'paid') {
+    // 8a. Clear user's server-side cart
+    try {
+      const { error: cartErr } = await supabase
+        .from('cart_items')
+        .delete()
+        .eq('user_id', order.user_id);
+      if (cartErr) {
+        console.warn(`⚠️ [paymobWebhook] Cart clear failed for user ${order.user_id}: ${cartErr.message}`);
+      } else {
+        console.log(`🛒 [paymobWebhook] Cart cleared for user ${order.user_id}`);
+      }
+    } catch (cartExc) {
+      console.warn('⚠️ [paymobWebhook] Cart clear exception:', cartExc.message);
+    }
+
+    // 8b. Fetch full order and user data to send confirmation email
+    try {
+      const { data: fullOrder } = await supabase
+        .from('orders')
+        .select('*, order_items(*), shipping_addresses(*)')
+        .eq('id', internalOrderId)
+        .maybeSingle();
+
+      const { data: userRow } = await supabase
+        .from('users')
+        .select('email, firstName')
+        .eq('id', order.user_id)
+        .maybeSingle();
+
+      if (userRow?.email && fullOrder) {
+        sendOrderConfirmationEmail(userRow.email, fullOrder, userRow.firstName || 'Customer')
+          .then(() => console.log(`📧 [paymobWebhook] Confirmation email sent to ${userRow.email}`))
+          .catch(e => console.warn('⚠️ [paymobWebhook] Order email skipped:', e.message));
+      }
+    } catch (emailErr) {
+      console.warn('⚠️ [paymobWebhook] Could not send confirmation email:', emailErr.message);
+    }
   }
 
-  // ── 8. Log activity ───────────────────────────────────────────────────────
+  // ── 9. Log activity ───────────────────────────────────────────────────────
   const logAction = finalStatus === 'paid' ? 'PAYMENT_CONFIRMED' : 'PAYMENT_FAILED';
   await logActivity(order.user_id, logAction, 'order', internalOrderId, {
     paymob_transaction_id: paymobTransactionId,
