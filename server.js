@@ -20,6 +20,7 @@ const bannerRoutes       = require('./routes/bannerRoutes');
 const analyticsRoutes    = require('./routes/analyticsRoutes');
 const moderationRoutes   = require('./routes/moderationRoutes');
 const settingsRoutes     = require('./routes/settingsRoutes');
+const paymobRoutes       = require('./routes/paymobRoutes');
 
 const sequelize = require('./config/database');
 
@@ -41,6 +42,11 @@ app.use(cors({
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
+
+// ── Paymob webhook uses express.raw() — must be mounted BEFORE express.json() ─
+// The raw body parser is scoped inside paymobRoutes to the /webhook path only.
+app.use('/api/v1/payments/paymob', paymobRoutes);
+
 app.use(express.json());
 
 app.get('/api/test-connection', async (req, res) => {
@@ -75,6 +81,7 @@ app.use('/api/settings',      settingsRoutes);
 app.use('/api/v1/settings',   settingsRoutes);
 app.use('/api/v1/owner',      ownerRoutes);
 app.use('/api/v1/banners',    bannerRoutes);
+// Note: /api/v1/payments/paymob is already mounted above express.json()
 
 const PORT = process.env.PORT || 5000;
 
