@@ -49,8 +49,12 @@ function cleanEnv(val) {
 }
 
 // ── Paymob URL bases ──────────────────────────────────────────────────────────
-const PAYMOB_IFRAME_BASE  = 'https://accept.paymob.com/api/acceptance/iframes';
-const PAYMOB_WALLET_BASE  = 'https://accept.paymob.com/api/acceptance/pay';
+// Card payments: iframe embed
+const PAYMOB_IFRAME_BASE = 'https://accept.paymob.com/api/acceptance/iframes';
+// NOTE: PAYMOB_WALLET_BASE ('https://accept.paymob.com/api/acceptance/pay') is
+//       the programmatic PAY *API endpoint* — not a browser URL. Wallet payments
+//       use the same PAYMOB_IFRAME_BASE format; what differentiates them is the
+//       integration_id baked into the payment_token (PAYMOB_WALLET_INTEGRATION_ID).
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Helper — calculate order amount in piastres from order_items in DB.
@@ -235,7 +239,26 @@ async function initiatePayment(req, res) {
 
     let iframeUrl;
     if (method === 'wallet') {
-      iframeUrl = `${PAYMOB_WALLET_BASE}/${paymentKey}`;
+      // Wallet UIG uses the same iframe format as card — the integration_id embedded
+      // in the payment_token tells Paymob to render the wallet selection UI.
+      //
+      // PAYMOB_WALLET_IFRAME_ID — set this if Paymob gave you a *separate* iframe
+      //   for your wallet integration (check: Dashboard → Payment Integrations → Iframe).
+      // Falls back to PAYMOB_IFRAME_ID when a single shared iframe covers both.
+      const walletIframeId = cleanEnv(process.env.PAYMOB_WALLET_IFRAME_ID)
+                          || cleanEnv(process.env.PAYMOB_IFRAME_ID);
+
+      if (!walletIframeId) {
+        return res.status(500).json({
+          success: false,
+          message:
+            'Payment initialization failed: neither PAYMOB_WALLET_IFRAME_ID nor ' +
+            'PAYMOB_IFRAME_ID is configured. Set at least one in your environment.',
+        });
+      }
+
+      iframeUrl = `${PAYMOB_IFRAME_BASE}/${walletIframeId}?payment_token=${paymentKey}`;
+      console.log(`🔗 [paymobController] Wallet iframe → iframeId=${walletIframeId}`);
     } else {
       const iframeId = cleanEnv(process.env.PAYMOB_IFRAME_ID);
       if (!iframeId) {
