@@ -473,6 +473,8 @@ async function handleWebhook(req, res) {
 
   if (updateErr) {
     console.error(`❌ [paymobWebhook] DB update failed for order ${internalOrderId}: ${updateErr.message}`);
+  }
+
   // ── 8. On successful payment: clear cart & send confirmation email ────────
   if (finalStatus === 'paid') {
     // 8a. Clear user's server-side cart
