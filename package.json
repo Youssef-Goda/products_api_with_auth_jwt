@@ -1,6 +1,6 @@
 {
   "name": "products_api_with_auth_jwt",
-  "version": "1.10.20",
+  "version": "1.10.21",
   "main": "server.js",
   "scripts": {
     "dev": "nodemon server.js"

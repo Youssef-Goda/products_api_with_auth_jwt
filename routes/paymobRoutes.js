@@ -54,14 +54,18 @@ router.options('*', (req, res) => res.sendStatus(200));
 router.post('/initiate', authenticateToken, initiatePayment);
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GET /callback
+// GET /callback & GET /webhook
 // Public — Paymob redirects the customer's browser here after card payment.
 // This is NOT a server-to-server call; it must NOT require JWT auth.
 // The handler only reads the query params and redirects the browser to the
 // Flutter web app checkout-status page. Order confirmation still comes from
 // the HMAC-verified POST /webhook — never from this callback.
+//
+// ⚠️ router.get('/webhook', handleCallback) catches browser GET requests if
+//    the Paymob dashboard Redirection URL was mistakenly set to /webhook.
 // ══════════════════════════════════════════════════════════════════════════════
 router.get('/callback', handleCallback);
+router.get('/webhook', handleCallback);
 
 // ══════════════════════════════════════════════════════════════════════════════
 // POST /webhook
