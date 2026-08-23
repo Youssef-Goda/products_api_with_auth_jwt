@@ -37,17 +37,34 @@ require('./models/StoreSetting');
 dotenv.config();
 const app = express();
 
-app.use(cors({
+// ── CORS ──────────────────────────────────────────────────────────────────────
+const corsOptions = {
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
-}));
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Origin',
+    'X-Requested-With',
+    'Content-Type',
+    'Accept',
+    'Authorization',
+  ],
+  exposedHeaders: ['Authorization'],
+  optionsSuccessStatus: 200, // some legacy browsers (IE11) choke on 204
+};
 
-// ── Paymob webhook uses express.raw() — must be mounted BEFORE express.json() ─
-// The raw body parser is scoped inside paymobRoutes to the /webhook path only.
+// Must come BEFORE all route definitions
+app.use(cors(corsOptions));
+
+// Handle all OPTIONS pre-flight requests globally
+app.options('*', cors(corsOptions));
+
+// ── Paymob webhook uses express.raw() ─ mount BEFORE express.json() ──────────
+// The scoped raw-body parser inside paymobRoutes preserves the exact bytes
+// Paymob signed, which is required for HMAC-SHA512 verification.
 app.use('/api/v1/payments/paymob', paymobRoutes);
 
 app.use(express.json());
+
 
 app.get('/api/test-connection', async (req, res) => {
   try {

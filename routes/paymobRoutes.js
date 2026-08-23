@@ -20,8 +20,27 @@
 const express = require('express');
 const router  = express.Router();
 
-const { authenticateToken }            = require('../middlewares/authMiddleware');
+const { authenticateToken }              = require('../middlewares/authMiddleware');
 const { initiatePayment, handleWebhook } = require('../controllers/paymobController');
+
+// ── Inline CORS headers (belt-and-suspenders) ────────────────────────────────
+// The global cors() middleware in server.js already handles this, but because
+// this router is mounted BEFORE express.json() (required for HMAC), we add
+// explicit headers here as well to guarantee no preflight is ever blocked.
+function setCorsHeaders(req, res, next) {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, PATCH, OPTIONS');
+  res.header(
+    'Access-Control-Allow-Headers',
+    'Origin, X-Requested-With, Content-Type, Accept, Authorization'
+  );
+  next();
+}
+
+router.use(setCorsHeaders);
+
+// Handle pre-flight OPTIONS for all sub-paths under this router
+router.options('*', (req, res) => res.sendStatus(200));
 
 // ══════════════════════════════════════════════════════════════════════════════
 // POST /initiate
@@ -42,3 +61,4 @@ router.post(
 );
 
 module.exports = router;
+
