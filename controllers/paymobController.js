@@ -1,19 +1,25 @@
 /**
  * paymobController.js
  * ─────────────────────────────────────────────────────────────────────────────
- * Handles the two Paymob payment endpoints:
+ * Handles three Paymob payment endpoints:
  *
  *   initiatePayment  POST /api/v1/payments/paymob/initiate   (protected — customer JWT)
  *   handleWebhook    POST /api/v1/payments/paymob/webhook    (public — Paymob server)
+ *   handleCallback   GET  /api/v1/payments/paymob/callback   (public — browser redirect)
  *
  * Architecture notes (transactional safety):
  *  • Order is created first by the /api/orders endpoint with payment_status='pending'.
  *  • initiatePayment ONLY generates a Paymob session — it does NOT confirm the order.
- *  • Order is only marked 'confirmed' by the webhook after Paymob verifies payment.
+ *  • Order is ONLY marked 'paid' / 'confirmed' by handleWebhook after Paymob
+ *    verifies the payment via HMAC-signed server-to-server webhook.
+ *  • handleCallback is browser-only: reads query params, redirects to Flutter —
+ *    it performs ZERO database writes.
  *  • If the Paymob API call fails, we return 502 with the exact reason — the order
  *    stays in 'pending' state so the customer can retry without data loss.
  *  • Amount is ALWAYS re-read from DB — client-sent amounts are never trusted.
  *  • Webhook HMAC is validated (crypto.timingSafeEqual) before any logic runs.
+ *  • Webhook always returns HTTP 200 to prevent Paymob retry storms.
+ *  • Webhook is idempotent: duplicate txn IDs and already-paid orders are no-ops.
  * ─────────────────────────────────────────────────────────────────────────────
  */
 
@@ -310,10 +316,9 @@ const HMAC_FIELDS = [
 ];
 
 function verifyPaymobHmac(body, receivedHmac) {
-  const secret = process.env.PAYMOB_HMAC_SECRET;
+  const secret = cleanEnv(process.env.PAYMOB_HMAC_SECRET);
   if (!secret) {
-    console.error('❌ [paymobController] PAYMOB_HMAC_SECRET is not set.');
-    return false;
+    throw new Error('PAYMOB_HMAC_SECRET is not set');
   }
 
   const get = (obj, key) => {
@@ -344,35 +349,56 @@ function verifyPaymobHmac(body, receivedHmac) {
 
 // ══════════════════════════════════════════════════════════════════════════════
 // POST /api/v1/payments/paymob/webhook
-// Public — called by Paymob after payment attempt.
-// Always returns 200 to prevent Paymob retry storms; business errors are logged.
-// Order is ONLY confirmed here — never in initiatePayment.
+//
+// Public — called by Paymob after every payment attempt.
+//
+// Security contract:
+//  • ALWAYS returns HTTP 200 — Paymob retries on any non-200, causing storms.
+//  • HMAC verified before any DB write.  Invalid HMAC → logged + 200 returned.
+//  • Idempotent: duplicate txn IDs and already-paid orders are silent no-ops.
+//  • Amount verified against DB — mismatches logged as FRAUD and order failed.
+//  • This is the ONLY place that sets payment_status = 'paid' in Supabase.
 // ══════════════════════════════════════════════════════════════════════════════
 async function handleWebhook(req, res) {
-  // ── 1. Parse raw body ─────────────────────────────────────────────────────
+  // Top-level guard: any uncaught error must still return 200 so Paymob does
+  // not enter a retry storm.  The error is logged for manual investigation.
+  try {
+
+  // ── 1. Parse raw body ───────────────────────────────────────────────────────
   let body;
   try {
     body = JSON.parse(req.body.toString('utf8'));
   } catch {
     console.error('❌ [paymobWebhook] Could not parse request body as JSON.');
-    return res.status(400).json({ success: false, message: 'Invalid JSON body.' });
+    return res.status(200).json({ received: false, message: 'Invalid JSON body.' });
   }
 
-  // ── 2. HMAC validation ────────────────────────────────────────────────────
+  // ── 2. HMAC validation ──────────────────────────────────────────────────────
+  // ⚠️  We return HTTP 200 even on failure so Paymob does NOT retry.
+  //     Invalid requests are logged and silently dropped.
   const receivedHmac = req.query?.hmac;
   if (!receivedHmac) {
     console.warn('⚠️ [paymobWebhook] Missing hmac query parameter — rejected.');
-    return res.status(400).json({ success: false, message: 'Missing HMAC.' });
+    return res.status(200).json({ received: false, message: 'Missing HMAC.' });
   }
 
-  if (!verifyPaymobHmac(body, receivedHmac)) {
-    console.warn('🚨 [paymobWebhook] HMAC validation FAILED — possible spoofed request.');
-    return res.status(400).json({ success: false, message: 'HMAC validation failed.' });
+  let hmacValid;
+  try {
+    hmacValid = verifyPaymobHmac(body, receivedHmac);
+  } catch (hmacErr) {
+    // Secret not configured — server misconfiguration, log loudly
+    console.error('🚨 [paymobWebhook] HMAC check threw:', hmacErr.message);
+    return res.status(200).json({ received: false, message: hmacErr.message });
+  }
+
+  if (!hmacValid) {
+    console.warn('🚨 [paymobWebhook] HMAC validation FAILED — possible spoofed request. Dropping.');
+    return res.status(200).json({ received: false, message: 'HMAC validation failed.' });
   }
 
   console.log('✅ [paymobWebhook] HMAC validated successfully.');
 
-  // ── 3. Extract transaction data ───────────────────────────────────────────
+  // ── 3. Extract transaction data ─────────────────────────────────────────────
   const txn = body?.obj ?? body;
 
   const paymobTransactionId = String(txn?.id ?? '');
@@ -383,7 +409,9 @@ async function handleWebhook(req, res) {
 
   console.log(`📬 [paymobWebhook] txn=${paymobTransactionId} success=${isSuccess} pending=${isPending} orderId=${internalOrderId}`);
 
-  // ── 4. Idempotency ────────────────────────────────────────────────────────
+  // ── 4. Idempotency guard (by Paymob transaction ID) ─────────────────────────
+  // If we have already processed this exact transaction, skip everything.
+  // This prevents double-emails and double-cart-clears on Paymob retries.
   if (paymobTransactionId) {
     const { data: existing } = await supabase
       .from('orders')
@@ -393,14 +421,14 @@ async function handleWebhook(req, res) {
 
     if (existing) {
       console.log(`ℹ️ [paymobWebhook] Transaction ${paymobTransactionId} already processed — skipping.`);
-      return res.status(200).json({ success: true, message: 'Already processed.' });
+      return res.status(200).json({ received: true, message: 'Already processed.' });
     }
   }
 
-  // ── 5. Resolve internal order ─────────────────────────────────────────────
+  // ── 5. Resolve internal order ────────────────────────────────────────────────
   if (!internalOrderId) {
     console.error('❌ [paymobWebhook] Cannot resolve internal order ID from webhook payload.');
-    return res.status(200).json({ success: true, message: 'Acknowledged (unresolvable order).' });
+    return res.status(200).json({ received: true, message: 'Acknowledged (unresolvable order).' });
   }
 
   const { data: order, error: fetchErr } = await supabase
@@ -411,15 +439,19 @@ async function handleWebhook(req, res) {
 
   if (fetchErr || !order) {
     console.error(`❌ [paymobWebhook] Order ${internalOrderId} not found in DB.`);
-    return res.status(200).json({ success: true, message: 'Acknowledged (order not found).' });
+    return res.status(200).json({ received: true, message: 'Acknowledged (order not found).' });
   }
 
+  // ── 4b. Idempotency guard (by order payment_status) ─────────────────────────
+  // Belt-and-suspenders: if the order is already marked paid (e.g. the txn ID
+  // column was null last time), do NOT re-send emails or re-clear carts.
   if (order.payment_status === 'paid') {
     console.log(`ℹ️ [paymobWebhook] Order ${internalOrderId} already marked paid — skipping.`);
-    return res.status(200).json({ success: true, message: 'Already processed.' });
+    return res.status(200).json({ received: true, message: 'Already processed.' });
   }
 
-  // ── 6. Amount verification ────────────────────────────────────────────────
+  // ── 6. Amount verification ───────────────────────────────────────────────────
+  // Re-calculate from DB — never trust the amount Paymob reports.
   let expectedAmountCents;
   try {
     expectedAmountCents = await calcAmountCentsFromDB(internalOrderId);
@@ -433,7 +465,7 @@ async function handleWebhook(req, res) {
       reason: 'Could not recalculate expected amount from DB',
       paymob_transaction_id: paymobTransactionId,
     });
-    return res.status(200).json({ success: true, message: 'Acknowledged (amount calculation error).' });
+    return res.status(200).json({ received: true, message: 'Acknowledged (amount calculation error).' });
   }
 
   if (amountCentsReported !== expectedAmountCents) {
@@ -453,11 +485,13 @@ async function handleWebhook(req, res) {
       expected_amount_cents: expectedAmountCents,
       paymob_transaction_id: paymobTransactionId,
     });
-    return res.status(200).json({ success: true, message: 'Acknowledged (amount mismatch).' });
+    return res.status(200).json({ received: true, message: 'Acknowledged (amount mismatch).' });
   }
 
-  // ── 7. Determine final status and update order ────────────────────────────
-  // Order is ONLY confirmed here — this is the authoritative confirmation point.
+  // ── 7. Determine final status and update order ───────────────────────────────
+  // ★ THIS IS THE ONLY PLACE IN THE ENTIRE CODEBASE THAT SETS payment_status='paid'.
+  //   handleCallback performs ZERO database writes.
+  //   initiatePayment only sets 'initiated'.
   const finalStatus = (isSuccess && !isPending) ? 'paid' : 'failed';
 
   const { error: updateErr } = await supabase
@@ -526,7 +560,15 @@ async function handleWebhook(req, res) {
   });
 
   console.log(`✅ [paymobWebhook] Order ${internalOrderId} → payment_status='${finalStatus}'.`);
-  return res.status(200).json({ success: true, message: `Payment ${finalStatus}.` });
+  return res.status(200).json({ received: true, message: `Payment ${finalStatus}.` });
+
+  } catch (outerErr) {
+    // Safety net: any uncaught async error must NOT bubble up as a 500.
+    // Paymob retries on non-200 responses — a 500 would cause an infinite storm.
+    // Log the full stack for manual investigation and acknowledge the request.
+    console.error('🚨 [paymobWebhook] Unhandled exception in webhook handler:', outerErr?.message, outerErr?.stack);
+    return res.status(200).json({ received: false, message: 'Internal error — logged for investigation.' });
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
