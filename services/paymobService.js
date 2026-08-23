@@ -247,7 +247,7 @@ async function generateWalletRedirectUrl(authToken, paymobOrderId, amountCents, 
     });
 
     const data = response.data;
-    const redirectUrl = data?.redirect_url || data?.iframe_redirection_url || data?.url;
+    const redirectUrl = data?.iframe_redirection_url || data?.redirect_url || data?.url;
 
     if (!redirectUrl && !data?.pending) {
       console.warn('[Paymob] Wallet pay response data:', JSON.stringify(data));
