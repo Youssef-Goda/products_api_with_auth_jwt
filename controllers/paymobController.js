@@ -529,4 +529,71 @@ async function handleWebhook(req, res) {
   return res.status(200).json({ success: true, message: `Payment ${finalStatus}.` });
 }
 
-module.exports = { initiatePayment, handleWebhook };
+// ══════════════════════════════════════════════════════════════════════════════
+// GET /api/v1/payments/paymob/callback
+//
+// Paymob calls this URL (set as redirect_url in the payment key) after the
+// customer finishes — or abandons — the card-payment iframe/browser window.
+//
+// Query params injected by Paymob:
+//   success             'true' | 'false'
+//   pending             'true' | 'false'
+//   id                  Paymob transaction ID
+//   merchant_order_id   Our internal order UUID (only if we passed it)
+//   order               Paymob order ID
+//   txn_response_code   e.g. 'APPROVED', 'BLOCKED'
+//   hmac                Signature — NOT validated here (webhook is the
+//                        authoritative source; this is only a browser redirect)
+//
+// This handler does NOT confirm the order — it only redirects the browser back
+// to the Flutter web app so the UI can poll GET /api/orders/:id/payment-status
+// (which is populated exclusively by the HMAC-verified webhook).
+// ══════════════════════════════════════════════════════════════════════════════
+function handleCallback(req, res) {
+  const {
+    success           = 'false',
+    pending           = 'false',
+    id:       txnId   = '',
+    merchant_order_id = '',
+    order:    paymobOrder = '',
+    txn_response_code = '',
+  } = req.query;
+
+  console.log(
+    `📲 [paymobCallback] Received — success=${success} pending=${pending} ` +
+    `orderId=${merchant_order_id} txnId=${txnId}`
+  );
+
+  // Resolve the frontend base URL.
+  // In development this is the Flutter web dev server (e.g. http://localhost:35691).
+  // In production it should be your hosted web domain.
+  // Set via PAYMOB_REDIRECT_URL env var (the same var used for the payment key).
+  const rawBase = cleanEnv(process.env.PAYMOB_REDIRECT_URL) || 'http://localhost:35691';
+
+  // Strip any trailing path/fragment from the base so we can build a clean URL.
+  // e.g.  "https://myapp.com/#/checkout/success"  →  "https://myapp.com"
+  let frontendBase;
+  try {
+    const u = new URL(rawBase);
+    frontendBase = u.origin;               // "https://myapp.com"
+  } catch {
+    frontendBase = rawBase.split('#')[0].replace(/\/+$/, '');
+  }
+
+  // Build the redirect URL — Flutter hash-routing with status params.
+  // The Flutter app's /checkout/status route reads these and polls the backend.
+  const params = new URLSearchParams({
+    success,
+    pending,
+    order_id: merchant_order_id,
+    txn_id:   txnId,
+    code:     txn_response_code,
+  });
+
+  const redirectUrl = `${frontendBase}/#/checkout/status?${params.toString()}`;
+
+  console.log(`↩️ [paymobCallback] Redirecting browser → ${redirectUrl}`);
+  return res.redirect(302, redirectUrl);
+}
+
+module.exports = { initiatePayment, handleWebhook, handleCallback };
