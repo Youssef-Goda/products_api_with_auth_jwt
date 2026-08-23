@@ -73,26 +73,34 @@ async function getAuthToken() {
 // ══════════════════════════════════════════════════════════════════════════════
 // Step 2 — Register Order on Paymob
 // POST /api/ecommerce/orders
-// amount_cents: integer (e.g. 5000 = 50.00 EGP)
+// amount_cents:      integer (e.g. 5000 = 50.00 EGP)
+// merchantOrderId:   our internal order UUID — sent as merchant_order_id so
+//                    Paymob echoes it back in the webhook as
+//                    txn.order.merchant_order_id, allowing us to correlate
+//                    the payment back to the correct local order.
 // Returns the Paymob order ID (numeric).
 // ══════════════════════════════════════════════════════════════════════════════
-async function registerOrder(authToken, amountCents, currency = 'EGP') {
+async function registerOrder(authToken, amountCents, merchantOrderId, currency = 'EGP') {
   if (!Number.isInteger(amountCents) || amountCents <= 0) {
     throw new Error('[Paymob] amountCents must be a positive integer.');
+  }
+  if (!merchantOrderId) {
+    throw new Error('[Paymob] merchantOrderId (internal order UUID) is required.');
   }
 
   try {
     const response = await paymobClient.post('/ecommerce/orders', {
-      auth_token:     authToken,
-      delivery_needed: false,
-      amount_cents:   amountCents,
+      auth_token:        authToken,
+      delivery_needed:   false,
+      amount_cents:      amountCents,
       currency,
+      merchant_order_id: String(merchantOrderId),   // ← correlates webhook → local order
       items: [],          // items are tracked on our side; Paymob doesn't require them
     });
 
     const paymobOrderId = response.data?.id;
     if (!paymobOrderId) throw new Error('[Paymob] Order registration did not return an id.');
-    console.log(`✅ [paymobService] Order registered on Paymob: id=${paymobOrderId}`);
+    console.log(`✅ [paymobService] Order registered on Paymob: id=${paymobOrderId} merchant_order_id=${merchantOrderId}`);
     return paymobOrderId;
   } catch (err) {
     throw sanitiseError(err);
@@ -208,4 +216,60 @@ async function generateCashReference(authToken, paymobOrderId, amountCents, bill
   }
 }
 
-module.exports = { getAuthToken, registerOrder, generatePaymentKey, generateCashReference };
+// ══════════════════════════════════════════════════════════════════════════════
+// Mobile Wallet (UIG) — Initiate Wallet Pay
+// Calls POST /api/acceptance/payments/pay with subtype: 'WALLET'.
+// Paymob returns a redirect_url or iframe_redirection_url for wallet authorization.
+//
+// integrationId: PAYMOB_WALLET_INTEGRATION_ID
+// Returns: { redirectUrl, pending, rawData }
+// ══════════════════════════════════════════════════════════════════════════════
+async function generateWalletRedirectUrl(authToken, paymobOrderId, amountCents, billingData = {}, walletNumber = '') {
+  const integrationId = cleanEnv(process.env.PAYMOB_WALLET_INTEGRATION_ID);
+  if (!integrationId) {
+    throw new Error('[Paymob] PAYMOB_WALLET_INTEGRATION_ID is not set in environment.');
+  }
+
+  // Step 3a — generate payment key for wallet integration
+  const paymentKey = await generatePaymentKey(authToken, paymobOrderId, amountCents, integrationId, billingData);
+
+  // Determine wallet identifier (customer phone number)
+  const identifier = walletNumber || billingData.phone_number || 'WALLET';
+
+  // Step 3b — execute the pay call to obtain the wallet redirect URL
+  try {
+    const response = await paymobClient.post('/acceptance/payments/pay', {
+      source: {
+        identifier: identifier,
+        subtype:    'WALLET',
+      },
+      payment_token: paymentKey,
+    });
+
+    const data = response.data;
+    const redirectUrl = data?.redirect_url || data?.iframe_redirection_url || data?.url;
+
+    if (!redirectUrl && !data?.pending) {
+      console.warn('[Paymob] Wallet pay response data:', JSON.stringify(data));
+      throw new Error('[Paymob] Wallet redirect URL was not returned in pay response.');
+    }
+
+    console.log(`✅ [paymobService] Wallet redirect URL generated for order ${paymobOrderId}`);
+    return {
+      redirectUrl: redirectUrl || null,
+      pending:     data?.pending === true,
+      rawData:     data,
+    };
+  } catch (err) {
+    throw sanitiseError(err);
+  }
+}
+
+module.exports = {
+  getAuthToken,
+  registerOrder,
+  generatePaymentKey,
+  generateCashReference,
+  generateWalletRedirectUrl,
+};
+

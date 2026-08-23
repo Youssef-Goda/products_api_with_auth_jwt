@@ -34,6 +34,7 @@ const {
   registerOrder,
   generatePaymentKey,
   generateCashReference,
+  generateWalletRedirectUrl,
 } = require('../services/paymobService');
 
 // ── Supabase admin client (bypass RLS) ───────────────────────────────────────
@@ -202,7 +203,10 @@ async function initiatePayment(req, res) {
 
     // ── 5. Call Paymob APIs ──────────────────────────────────────────────────
     const authToken   = await getAuthToken();
-    const paymobOrder = await registerOrder(authToken, amountCents);
+    // Pass order_id as merchantOrderId — Paymob will echo it back as
+    // txn.order.merchant_order_id in the HMAC-verified server-to-server webhook,
+    // which is the ONLY mechanism handleWebhook uses to resolve the local order.
+    const paymobOrder = await registerOrder(authToken, amountCents, order_id);
 
     // ── 5a. Cash / Fawry kiosk ───────────────────────────────────────────────
     if (isCash) {
@@ -232,43 +236,50 @@ async function initiatePayment(req, res) {
       });
     }
 
-    // ── 5b. Card / Wallet ────────────────────────────────────────────────────
+    // ── 5b. Mobile Wallet (UIG) ──────────────────────────────────────────────
+    if (method === 'wallet') {
+      const walletResult = await generateWalletRedirectUrl(
+        authToken,
+        paymobOrder,
+        amountCents,
+        billingData,
+        req.body?.wallet_number || req.body?.phone_number
+      );
+
+      await supabase
+        .from('orders')
+        .update({ payment_status: 'initiated', updated_at: new Date().toISOString() })
+        .eq('id', order_id);
+
+      await logActivity(userId, 'PAYMENT_INITIATED', 'order', order_id, {
+        payment_method: 'wallet',
+        amount_cents:   amountCents,
+      });
+
+      console.log(`✅ [paymobController] Wallet payment initiated for order ${order_id}`);
+
+      return res.status(200).json({
+        success:      true,
+        payment_type: 'wallet',
+        redirect_url: walletResult.redirectUrl,
+        iframe_url:   walletResult.redirectUrl, // Backward-compatible with existing Flutter client code
+        pending:      walletResult.pending,
+      });
+    }
+
+    // ── 5c. Credit / Debit Card (VPC) ─────────────────────────────────────────
     const paymentKey = await generatePaymentKey(
       authToken, paymobOrder, amountCents, integrationId, billingData
     );
 
-    let iframeUrl;
-    if (method === 'wallet') {
-      // Wallet UIG uses the same iframe format as card — the integration_id embedded
-      // in the payment_token tells Paymob to render the wallet selection UI.
-      //
-      // PAYMOB_WALLET_IFRAME_ID — set this if Paymob gave you a *separate* iframe
-      //   for your wallet integration (check: Dashboard → Payment Integrations → Iframe).
-      // Falls back to PAYMOB_IFRAME_ID when a single shared iframe covers both.
-      const walletIframeId = cleanEnv(process.env.PAYMOB_WALLET_IFRAME_ID)
-                          || cleanEnv(process.env.PAYMOB_IFRAME_ID);
-
-      if (!walletIframeId) {
-        return res.status(500).json({
-          success: false,
-          message:
-            'Payment initialization failed: neither PAYMOB_WALLET_IFRAME_ID nor ' +
-            'PAYMOB_IFRAME_ID is configured. Set at least one in your environment.',
-        });
-      }
-
-      iframeUrl = `${PAYMOB_IFRAME_BASE}/${walletIframeId}?payment_token=${paymentKey}`;
-      console.log(`🔗 [paymobController] Wallet iframe → iframeId=${walletIframeId}`);
-    } else {
-      const iframeId = cleanEnv(process.env.PAYMOB_IFRAME_ID);
-      if (!iframeId) {
-        return res.status(500).json({
-          success: false,
-          message: 'Payment initialization failed: PAYMOB_IFRAME_ID is not configured.',
-        });
-      }
-      iframeUrl = `${PAYMOB_IFRAME_BASE}/${iframeId}?payment_token=${paymentKey}`;
+    const iframeId = cleanEnv(process.env.PAYMOB_IFRAME_ID);
+    if (!iframeId) {
+      return res.status(500).json({
+        success: false,
+        message: 'Payment initialization failed: PAYMOB_IFRAME_ID is not configured.',
+      });
     }
+    const iframeUrl = `${PAYMOB_IFRAME_BASE}/${iframeId}?payment_token=${paymentKey}`;
 
     await supabase
       .from('orders')
@@ -276,15 +287,15 @@ async function initiatePayment(req, res) {
       .eq('id', order_id);
 
     await logActivity(userId, 'PAYMENT_INITIATED', 'order', order_id, {
-      payment_method: method,
+      payment_method: 'card',
       amount_cents:   amountCents,
     });
 
-    console.log(`✅ [paymobController] Payment initiated for order ${order_id} (${method})`);
+    console.log(`✅ [paymobController] Card payment initiated for order ${order_id}`);
 
     return res.status(200).json({
       success:      true,
-      payment_type: method,
+      payment_type: 'card',
       iframe_url:   iframeUrl,
     });
 
