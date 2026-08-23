@@ -27,6 +27,12 @@ const paymobClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
+// Helper: Strips quotes and whitespace from environment variables
+function cleanEnv(val) {
+  if (!val) return '';
+  return String(val).trim().replace(/^["']|["']$/g, '');
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Internal helper — strips anything that looks like a secret from error text
 // so we never accidentally leak credentials to logs.
@@ -34,9 +40,13 @@ const paymobClient = axios.create({
 function sanitiseError(err) {
   const status = err?.response?.status;
   const data   = err?.response?.data;
-  // Never log the raw config (it may contain the Authorization header / API key)
+
+  if (status === 401 || status === 403) {
+    return new Error(`Paymob Authentication Failed: Incorrect credentials. (HTTP ${status})`);
+  }
+
   return new Error(
-    `[Paymob] HTTP ${status ?? 'network error'}: ${JSON.stringify(data) ?? err.message}`
+    `[Paymob] HTTP ${status ?? 'network error'}: ${data ? JSON.stringify(data) : err.message}`
   );
 }
 
@@ -46,7 +56,7 @@ function sanitiseError(err) {
 // Returns a short-lived auth token (valid ~ 1 hour per Paymob docs).
 // ══════════════════════════════════════════════════════════════════════════════
 async function getAuthToken() {
-  const apiKey = process.env.PAYMOB_API_KEY;
+  const apiKey = cleanEnv(process.env.PAYMOB_API_KEY);
   if (!apiKey) throw new Error('[Paymob] PAYMOB_API_KEY is not set in environment.');
 
   try {
@@ -99,7 +109,11 @@ async function registerOrder(authToken, amountCents, currency = 'EGP') {
 //     street, building, floor, apartment, postal_code, state }
 // ══════════════════════════════════════════════════════════════════════════════
 async function generatePaymentKey(authToken, paymobOrderId, amountCents, integrationId, billingData = {}) {
-  if (!integrationId) throw new Error('[Paymob] integrationId is required to generate a payment key.');
+  const cleanIntegrationId = cleanEnv(integrationId);
+  if (!cleanIntegrationId) throw new Error('[Paymob] integrationId is required to generate a payment key.');
+
+  const intId = parseInt(cleanIntegrationId, 10);
+  const parsedIntegrationId = isNaN(intId) ? cleanIntegrationId : intId;
 
   // Paymob requires ALL billing fields; supply safe defaults for optional ones
   const billing = {
@@ -126,7 +140,7 @@ async function generatePaymentKey(authToken, paymobOrderId, amountCents, integra
       order_id:      paymobOrderId,
       billing_data:  billing,
       currency:      'EGP',
-      integration_id: integrationId,
+      integration_id: parsedIntegrationId,
       lock_order_when_paid: true,
     });
 
@@ -149,7 +163,7 @@ async function generatePaymentKey(authToken, paymobOrderId, amountCents, integra
 // Returns: { billReference, expiresAt }
 // ══════════════════════════════════════════════════════════════════════════════
 async function generateCashReference(authToken, paymobOrderId, amountCents, billingData = {}) {
-  const integrationId = process.env.PAYMOB_CASH_INTEGRATION_ID;
+  const integrationId = cleanEnv(process.env.PAYMOB_CASH_INTEGRATION_ID);
   if (!integrationId) {
     throw new Error('[Paymob] PAYMOB_CASH_INTEGRATION_ID is not set in environment.');
   }

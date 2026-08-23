@@ -35,6 +35,12 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
 
+// Helper: Strips quotes and whitespace from environment variables
+function cleanEnv(val) {
+  if (!val) return '';
+  return String(val).trim().replace(/^["']|["']$/g, '');
+}
+
 // ── Paymob URL bases ──────────────────────────────────────────────────────────
 const PAYMOB_IFRAME_BASE  = 'https://accept.paymob.com/api/acceptance/iframes';
 const PAYMOB_WALLET_BASE  = 'https://accept.paymob.com/api/acceptance/pay';
@@ -161,22 +167,24 @@ async function initiatePayment(req, res) {
     }
 
     // ── 4. Check integration IDs are configured ───────────────────────────────
-    if (!isCash) {
-      const integrationId = method === 'wallet'
-        ? process.env.PAYMOB_WALLET_INTEGRATION_ID
-        : process.env.PAYMOB_CARD_INTEGRATION_ID;
+    let integrationId;
+    if (isCash) {
+      integrationId = cleanEnv(process.env.PAYMOB_CASH_INTEGRATION_ID);
+      if (!integrationId) {
+        return res.status(500).json({
+          success: false,
+          message: 'Payment initialization failed: PAYMOB_CASH_INTEGRATION_ID is not configured on the server.',
+        });
+      }
+    } else {
+      integrationId = method === 'wallet'
+        ? cleanEnv(process.env.PAYMOB_WALLET_INTEGRATION_ID)
+        : cleanEnv(process.env.PAYMOB_CARD_INTEGRATION_ID);
 
       if (!integrationId) {
         return res.status(500).json({
           success: false,
           message: `Payment initialization failed: PAYMOB_${method.toUpperCase()}_INTEGRATION_ID is not configured on the server.`,
-        });
-      }
-    } else {
-      if (!process.env.PAYMOB_CASH_INTEGRATION_ID) {
-        return res.status(500).json({
-          success: false,
-          message: 'Payment initialization failed: PAYMOB_CASH_INTEGRATION_ID is not configured on the server.',
         });
       }
     }
@@ -214,10 +222,6 @@ async function initiatePayment(req, res) {
     }
 
     // ── 5b. Card / Wallet ────────────────────────────────────────────────────
-    const integrationId = method === 'wallet'
-      ? process.env.PAYMOB_WALLET_INTEGRATION_ID
-      : process.env.PAYMOB_CARD_INTEGRATION_ID;
-
     const paymentKey = await generatePaymentKey(
       authToken, paymobOrder, amountCents, integrationId, billingData
     );
@@ -226,7 +230,7 @@ async function initiatePayment(req, res) {
     if (method === 'wallet') {
       iframeUrl = `${PAYMOB_WALLET_BASE}/${paymentKey}`;
     } else {
-      const iframeId = process.env.PAYMOB_IFRAME_ID;
+      const iframeId = cleanEnv(process.env.PAYMOB_IFRAME_ID);
       if (!iframeId) {
         return res.status(500).json({
           success: false,
@@ -257,6 +261,18 @@ async function initiatePayment(req, res) {
   } catch (err) {
     const reason = err.message ?? 'Unknown error';
     console.error('❌ [paymobController] initiatePayment error:', reason);
+
+    if (
+      reason.includes('Authentication Failed') ||
+      reason.includes('HTTP 403') ||
+      reason.includes('HTTP 401') ||
+      reason.includes('Incorrect credentials')
+    ) {
+      return res.status(403).json({
+        success: false,
+        message: 'Paymob Authentication Failed: Incorrect credentials.',
+      });
+    }
 
     return res.status(502).json({
       success: false,
