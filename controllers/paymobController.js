@@ -564,24 +564,35 @@ function handleCallback(req, res) {
     `orderId=${merchant_order_id} txnId=${txnId}`
   );
 
-  // Resolve the frontend base URL.
-  // In development this is the Flutter web dev server (e.g. http://localhost:35691).
-  // In production it should be your hosted web domain.
-  // Set via PAYMOB_REDIRECT_URL env var (the same var used for the payment key).
-  const rawBase = cleanEnv(process.env.PAYMOB_REDIRECT_URL) || 'http://localhost:35691';
+  // ── Resolve the frontend base URL — never hardcode a port ─────────────────
+  // Priority:
+  //   1. FRONTEND_URL env var   — set this on Vercel / .env for every environment
+  //   2. HTTP Referer / Origin  — browser sends this; handy in dev with ngrok
+  //   3. Fallback JSON 200      — tells the dev to set the env var
+  let frontendBase = cleanEnv(process.env.FRONTEND_URL);
 
-  // Strip any trailing path/fragment from the base so we can build a clean URL.
-  // e.g.  "https://myapp.com/#/checkout/success"  →  "https://myapp.com"
-  let frontendBase;
-  try {
-    const u = new URL(rawBase);
-    frontendBase = u.origin;               // "https://myapp.com"
-  } catch {
-    frontendBase = rawBase.split('#')[0].replace(/\/+$/, '');
+  if (!frontendBase) {
+    const referer = req.get('Referer') || req.get('Origin') || '';
+    if (referer) {
+      try { frontendBase = new URL(referer).origin; } catch { frontendBase = ''; }
+    }
   }
 
-  // Build the redirect URL — Flutter hash-routing with status params.
-  // The Flutter app's /checkout/status route reads these and polls the backend.
+  if (!frontendBase) {
+    console.warn('⚠️ [paymobCallback] FRONTEND_URL not set, no Referer — returning params as JSON');
+    return res.status(200).json({
+      success, pending,
+      order_id: merchant_order_id,
+      txn_id:   txnId,
+      code:     txn_response_code,
+      message:  'Set FRONTEND_URL env var to enable automatic browser redirect.',
+    });
+  }
+
+  // Strip any trailing path/fragment → clean origin
+  try { frontendBase = new URL(frontendBase).origin; }
+  catch { frontendBase = frontendBase.split('#')[0].replace(/\/+$/, ''); }
+
   const params = new URLSearchParams({
     success,
     pending,
