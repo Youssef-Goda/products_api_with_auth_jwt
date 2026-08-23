@@ -133,6 +133,12 @@ async function generatePaymentKey(authToken, paymobOrderId, amountCents, integra
   };
 
   try {
+    // redirect_url: where Paymob sends the browser after card payment (should be the
+    //   frontend checkout-result page, NOT the backend URL).
+    // notification_url: server-to-server webhook endpoint on this backend.
+    const redirectUrl      = cleanEnv(process.env.PAYMOB_REDIRECT_URL)      || '';
+    const notificationUrl  = cleanEnv(process.env.PAYMOB_NOTIFICATION_URL)  || '';
+
     const response = await paymobClient.post('/acceptance/payment_keys', {
       auth_token:    authToken,
       amount_cents:  amountCents,
@@ -142,6 +148,8 @@ async function generatePaymentKey(authToken, paymobOrderId, amountCents, integra
       currency:      'EGP',
       integration_id: parsedIntegrationId,
       lock_order_when_paid: true,
+      ...(redirectUrl     ? { redirect_url:     redirectUrl }     : {}),
+      ...(notificationUrl ? { notification_url: notificationUrl } : {}),
     });
 
     const paymentKey = response.data?.token;

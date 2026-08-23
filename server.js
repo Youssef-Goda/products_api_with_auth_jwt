@@ -103,6 +103,7 @@ app.use('/api/settings',      settingsRoutes);
 app.use('/api/v1/settings',   settingsRoutes);
 app.use('/api/v1/owner',      ownerRoutes);
 app.use('/api/v1/banners',    bannerRoutes);
+app.use('/api/v1/orders',     orderRoutes);   // exposes GET /api/v1/orders/:id/payment-status
 // Note: /api/v1/payments/paymob is already mounted above express.json()
 
 const PORT = process.env.PORT || 5000;

@@ -266,6 +266,44 @@ router.get('/:id', authenticateToken, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
+// GET /api/orders/:id/payment-status  — Lightweight payment status check
+//
+// Used by the "I Have Paid" button in the app to verify server-side that Paymob
+// has confirmed the payment via webhook BEFORE navigating to the success screen.
+// Returns only { payment_status, status } — never bypasses Paymob confirmation.
+// ══════════════════════════════════════════════════════════════════════════════
+router.get('/:id/payment-status', authenticateToken, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('id, user_id, status, payment_status')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (error) throw error;
+    if (!data) return res.status(404).json({ success: false, message: 'Order not found.' });
+
+    // IDOR guard — only the order owner or an elevated role can query this
+    const userRole  = (req.user?.role || '').toLowerCase();
+    const isElevated = ['admin', 'owner', 'moderator', 'super_admin'].includes(userRole);
+    if (data.user_id !== req.user.id && !isElevated) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order.' });
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        payment_status: data.payment_status,  // 'pending' | 'initiated' | 'paid' | 'failed'
+        status:         data.status,          // 'pending' | 'confirmed' | etc.
+      },
+    });
+  } catch (err) {
+    console.error('❌ [Orders] GET /:id/payment-status Error:', err.message);
+    return res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
 // PATCH /api/orders/:id/status  — Update order status (Admin / Super-Admin only)
 // Body: { status: string }
 // ══════════════════════════════════════════════════════════════════════════════
