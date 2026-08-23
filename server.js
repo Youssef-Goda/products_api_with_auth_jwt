@@ -58,13 +58,18 @@ app.use(cors(corsOptions));
 // Handle all OPTIONS pre-flight requests globally
 app.options('*', cors(corsOptions));
 
-// ── Paymob webhook uses express.raw() ─ mount BEFORE express.json() ──────────
-// The scoped raw-body parser inside paymobRoutes preserves the exact bytes
-// Paymob signed, which is required for HMAC-SHA512 verification.
+// ── Body Parsers ──────────────────────────────────────────────────────────────
+// Skip express.json() for paymob webhook so express.raw() can capture the raw Buffer for HMAC validation
+app.use((req, res, next) => {
+  if (req.originalUrl?.includes('/payments/paymob/webhook') || req.path?.includes('/payments/paymob/webhook')) {
+    return next();
+  }
+  express.json()(req, res, next);
+});
+app.use(express.urlencoded({ extended: true }));
+
+// ── Paymob Routes ─────────────────────────────────────────────────────────────
 app.use('/api/v1/payments/paymob', paymobRoutes);
-
-app.use(express.json());
-
 
 app.get('/api/test-connection', async (req, res) => {
   try {

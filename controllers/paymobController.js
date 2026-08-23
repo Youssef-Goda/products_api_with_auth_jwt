@@ -78,107 +78,110 @@ async function calcAmountCentsFromDB(orderId) {
 // payment_status='pending' until the Paymob webhook fires with success=true.
 // ══════════════════════════════════════════════════════════════════════════════
 async function initiatePayment(req, res) {
-  const userId = req.user?.id;
-  if (!userId) {
-    return res.status(401).json({ success: false, message: 'Not authenticated.' });
-  }
-
-  const { order_id, payment_method } = req.body;
-
-  if (!order_id) {
-    return res.status(400).json({ success: false, message: 'order_id is required.' });
-  }
-
-  const method = (payment_method || 'card').toLowerCase();
-  if (!['card', 'wallet', 'cash', 'fawry'].includes(method)) {
-    return res.status(400).json({
-      success: false,
-      message: "payment_method must be 'card', 'wallet', or 'cash'.",
-    });
-  }
-
-  const isCash = method === 'cash' || method === 'fawry';
-
-  // ── 1. Verify order exists and belongs to this user ──────────────────────
-  const { data: order, error: orderErr } = await supabase
-    .from('orders')
-    .select('id, user_id, status, payment_status')
-    .eq('id', order_id)
-    .maybeSingle();
-
-  if (orderErr) {
-    return res.status(500).json({
-      success: false,
-      message: `Payment initialization failed: DB error fetching order — ${orderErr.message}`,
-    });
-  }
-  if (!order) {
-    return res.status(404).json({ success: false, message: 'Order not found.' });
-  }
-  if (order.user_id !== userId) {
-    return res.status(403).json({ success: false, message: 'Access denied to this order.' });
-  }
-  if (order.payment_status === 'paid') {
-    return res.status(409).json({ success: false, message: 'This order has already been paid.' });
-  }
-
-  // ── 2. Fetch user billing data ────────────────────────────────────────────
-  const { data: userRow } = await supabase
-    .from('users')
-    .select('firstName, lastName, email, phone')
-    .eq('id', userId)
-    .maybeSingle();
-
-  const billingData = {
-    first_name:   userRow?.firstName   ?? 'Customer',
-    last_name:    userRow?.lastName    ?? 'User',
-    email:        userRow?.email       ?? 'customer@example.com',
-    phone_number: userRow?.phone       ?? '+201000000000',
-    city:         'Cairo',
-    country:      'EG',
-    state:        'Cairo',
-    street:       'N/A',
-    building:     'N/A',
-    floor:        'N/A',
-    apartment:    'N/A',
-    postal_code:  '00000',
-  };
-
-  // ── 3. Calculate amount strictly from DB ──────────────────────────────────
-  let amountCents;
   try {
-    amountCents = await calcAmountCentsFromDB(order_id);
-    console.log(`💰 [paymobController] Order ${order_id} → amountCents=${amountCents}`);
-  } catch (calcErr) {
-    return res.status(500).json({
-      success: false,
-      message: `Payment initialization failed: could not calculate order amount — ${calcErr.message}`,
-    });
-  }
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ success: false, message: 'Not authenticated.' });
+    }
 
-  // ── 4. Check integration IDs are configured ───────────────────────────────
-  if (!isCash) {
-    const integrationId = method === 'wallet'
-      ? process.env.PAYMOB_WALLET_INTEGRATION_ID
-      : process.env.PAYMOB_CARD_INTEGRATION_ID;
-
-    if (!integrationId) {
-      return res.status(500).json({
+    if (!req.body || !req.body.order_id) {
+      return res.status(400).json({
         success: false,
-        message: `Payment initialization failed: PAYMOB_${method.toUpperCase()}_INTEGRATION_ID is not configured on the server.`,
+        message: 'Invalid request: missing order_id in body',
       });
     }
-  } else {
-    if (!process.env.PAYMOB_CASH_INTEGRATION_ID) {
-      return res.status(500).json({
+
+    const { order_id, payment_method } = req.body;
+
+    const method = (payment_method || 'card').toLowerCase();
+    if (!['card', 'wallet', 'cash', 'fawry'].includes(method)) {
+      return res.status(400).json({
         success: false,
-        message: 'Payment initialization failed: PAYMOB_CASH_INTEGRATION_ID is not configured on the server.',
+        message: "payment_method must be 'card', 'wallet', or 'cash'.",
       });
     }
-  }
 
-  // ── 5. Call Paymob APIs — all in one try/catch so any failure is surfaced ─
-  try {
+    const isCash = method === 'cash' || method === 'fawry';
+
+    // ── 1. Verify order exists and belongs to this user ──────────────────────
+    const { data: order, error: orderErr } = await supabase
+      .from('orders')
+      .select('id, user_id, status, payment_status')
+      .eq('id', order_id)
+      .maybeSingle();
+
+    if (orderErr) {
+      return res.status(500).json({
+        success: false,
+        message: `Payment initialization failed: DB error fetching order — ${orderErr.message}`,
+      });
+    }
+    if (!order) {
+      return res.status(404).json({ success: false, message: 'Order not found.' });
+    }
+    if (order.user_id !== userId) {
+      return res.status(403).json({ success: false, message: 'Access denied to this order.' });
+    }
+    if (order.payment_status === 'paid') {
+      return res.status(409).json({ success: false, message: 'This order has already been paid.' });
+    }
+
+    // ── 2. Fetch user billing data ────────────────────────────────────────────
+    const { data: userRow } = await supabase
+      .from('users')
+      .select('firstName, lastName, email, phone')
+      .eq('id', userId)
+      .maybeSingle();
+
+    const billingData = {
+      first_name:   userRow?.firstName   ?? 'Customer',
+      last_name:    userRow?.lastName    ?? 'User',
+      email:        userRow?.email       ?? 'customer@example.com',
+      phone_number: userRow?.phone       ?? '+201000000000',
+      city:         'Cairo',
+      country:      'EG',
+      state:        'Cairo',
+      street:       'N/A',
+      building:     'N/A',
+      floor:        'N/A',
+      apartment:    'N/A',
+      postal_code:  '00000',
+    };
+
+    // ── 3. Calculate amount strictly from DB ──────────────────────────────────
+    let amountCents;
+    try {
+      amountCents = await calcAmountCentsFromDB(order_id);
+      console.log(`💰 [paymobController] Order ${order_id} → amountCents=${amountCents}`);
+    } catch (calcErr) {
+      return res.status(500).json({
+        success: false,
+        message: `Payment initialization failed: could not calculate order amount — ${calcErr.message}`,
+      });
+    }
+
+    // ── 4. Check integration IDs are configured ───────────────────────────────
+    if (!isCash) {
+      const integrationId = method === 'wallet'
+        ? process.env.PAYMOB_WALLET_INTEGRATION_ID
+        : process.env.PAYMOB_CARD_INTEGRATION_ID;
+
+      if (!integrationId) {
+        return res.status(500).json({
+          success: false,
+          message: `Payment initialization failed: PAYMOB_${method.toUpperCase()}_INTEGRATION_ID is not configured on the server.`,
+        });
+      }
+    } else {
+      if (!process.env.PAYMOB_CASH_INTEGRATION_ID) {
+        return res.status(500).json({
+          success: false,
+          message: 'Payment initialization failed: PAYMOB_CASH_INTEGRATION_ID is not configured on the server.',
+        });
+      }
+    }
+
+    // ── 5. Call Paymob APIs ──────────────────────────────────────────────────
     const authToken   = await getAuthToken();
     const paymobOrder = await registerOrder(authToken, amountCents);
 
@@ -188,7 +191,6 @@ async function initiatePayment(req, res) {
         authToken, paymobOrder, amountCents, billingData
       );
 
-      // Mark as initiated (NOT confirmed — confirmation comes from webhook)
       await supabase
         .from('orders')
         .update({ payment_status: 'initiated', updated_at: new Date().toISOString() })
@@ -205,13 +207,13 @@ async function initiatePayment(req, res) {
       return res.status(200).json({
         success:          true,
         payment_type:     'cash',
-        reference_number: billReference,   // ← frontend reads this key
-        expire_date:      expiresAt,       // ← frontend reads this key
+        reference_number: billReference,
+        expire_date:      expiresAt,
         amount_cents:     amountCents,
       });
     }
 
-    // ── 5b. Card / Wallet — generate key then build URL ──────────────────────
+    // ── 5b. Card / Wallet ────────────────────────────────────────────────────
     const integrationId = method === 'wallet'
       ? process.env.PAYMOB_WALLET_INTEGRATION_ID
       : process.env.PAYMOB_CARD_INTEGRATION_ID;
@@ -234,7 +236,6 @@ async function initiatePayment(req, res) {
       iframeUrl = `${PAYMOB_IFRAME_BASE}/${iframeId}?payment_token=${paymentKey}`;
     }
 
-    // Mark as initiated (NOT confirmed — confirmation comes from webhook)
     await supabase
       .from('orders')
       .update({ payment_status: 'initiated', updated_at: new Date().toISOString() })
@@ -250,15 +251,13 @@ async function initiatePayment(req, res) {
     return res.status(200).json({
       success:      true,
       payment_type: method,
-      iframe_url:   iframeUrl,    // ← frontend reads this key
+      iframe_url:   iframeUrl,
     });
 
-  } catch (paymobErr) {
-    // Surface the exact Paymob error to help debugging — never include secrets
-    const reason = paymobErr.message ?? 'Unknown error';
-    console.error(`❌ [paymobController] Paymob API error for order ${order_id}:`, reason);
+  } catch (err) {
+    const reason = err.message ?? 'Unknown error';
+    console.error('❌ [paymobController] initiatePayment error:', reason);
 
-    // Order stays in 'pending' — customer can retry safely
     return res.status(502).json({
       success: false,
       message: `Payment initialization failed: ${reason}`,
