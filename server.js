@@ -37,9 +37,48 @@ require('./models/StoreSetting');
 dotenv.config();
 const app = express();
 
+// Helper: Strips quotes and whitespace from environment variables
+function cleanEnv(val) {
+  if (!val) return '';
+  return String(val).trim().replace(/^["']|["']$/g, '');
+}
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
+const rawAllowedOrigins = cleanEnv(process.env.ALLOWED_ORIGINS);
+const allowedOriginsList = rawAllowedOrigins
+  ? rawAllowedOrigins.split(',').map((o) => cleanEnv(o)).filter(Boolean)
+  : ['http://localhost:3000', 'http://localhost:5000', 'http://127.0.0.1:3000'];
+
 const corsOptions = {
-  origin: '*',
+  origin: (origin, callback) => {
+    // Allow requests with no origin (mobile apps, curl, server-to-server)
+    if (!origin) return callback(null, true);
+
+    // If allowedOrigins contains wildcard '*' or matches exact requesting origin
+    if (allowedOriginsList.includes('*') || allowedOriginsList.includes(origin)) {
+      return callback(null, true);
+    }
+
+    // Allow local development ports (localhost / 127.0.0.1)
+    if (/^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
+      return callback(null, true);
+    }
+
+    // Allow FRONTEND_URL if set in environment
+    const frontendUrl = cleanEnv(process.env.FRONTEND_URL);
+    if (frontendUrl) {
+      try {
+        const parsedOrigin = new URL(frontendUrl).origin;
+        if (origin === frontendUrl || origin === parsedOrigin) {
+          return callback(null, true);
+        }
+      } catch (_) {}
+    }
+
+    console.warn(`⚠️ [CORS] Blocked origin: ${origin}`);
+    return callback(new Error('Not allowed by CORS'));
+  },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: [
     'Origin',
@@ -49,7 +88,7 @@ const corsOptions = {
     'Authorization',
   ],
   exposedHeaders: ['Authorization'],
-  optionsSuccessStatus: 200, // some legacy browsers (IE11) choke on 204
+  optionsSuccessStatus: 200, // legacy browsers support
 };
 
 // Must come BEFORE all route definitions
