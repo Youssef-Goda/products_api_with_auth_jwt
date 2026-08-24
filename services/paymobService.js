@@ -247,11 +247,71 @@ async function generateWalletRedirectUrl(authToken, paymobOrderId, amountCents, 
     });
 
     const data = response.data;
-    const redirectUrl = data?.iframe_redirection_url || data?.redirect_url || data?.url;
 
-    if (!redirectUrl && !data?.pending) {
-      console.warn('[Paymob] Wallet pay response data:', JSON.stringify(data));
-      throw new Error('[Paymob] Wallet redirect URL was not returned in pay response.');
+    // ── Log Paymob response fields for debugging (no secrets) ──────────────────
+    console.log('[paymobService] Wallet pay response fields:', {
+      has_iframe_redirection_url: !!data?.iframe_redirection_url,
+      has_redirect_url:           !!data?.redirect_url,
+      has_url:                    !!data?.url,
+      pending:                    data?.pending,
+      iframe_redirection_url:     data?.iframe_redirection_url ?? null,
+      redirect_url:               data?.redirect_url ?? null,
+    });
+
+    // ── Strict Paymob URL validation ──────────────────────────────────────────
+    // The merchant callback (PAYMOB_REDIRECT_URL) must NEVER be returned as the
+    // wallet authorization URL. Valid Paymob payment pages are always hosted on
+    // https://accept.paymob.com/.
+    const PAYMOB_HOST       = 'https://accept.paymob.com/';
+    const merchantCallback  = cleanEnv(process.env.PAYMOB_REDIRECT_URL);
+
+    function isValidPaymobUrl(url) {
+      return typeof url === 'string' && url.startsWith(PAYMOB_HOST);
+    }
+
+    function isMerchantCallback(url) {
+      if (!url || !merchantCallback) return false;
+      return url === merchantCallback || url.startsWith(merchantCallback.replace(/\/$/, ''));
+    }
+
+    // Priority: iframe_redirection_url > redirect_url > url — but only Paymob-hosted URLs.
+    let redirectUrl = null;
+
+    if (isValidPaymobUrl(data?.iframe_redirection_url)) {
+      redirectUrl = data.iframe_redirection_url;
+      console.log('[paymobService] Wallet: using iframe_redirection_url (Paymob-hosted).');
+    } else if (isValidPaymobUrl(data?.redirect_url)) {
+      redirectUrl = data.redirect_url;
+      console.log('[paymobService] Wallet: using redirect_url (Paymob-hosted).');
+    } else if (isValidPaymobUrl(data?.url)) {
+      redirectUrl = data.url;
+      console.log('[paymobService] Wallet: using url (Paymob-hosted).');
+    } else {
+      // None of the URL fields are Paymob-hosted — diagnose and reject.
+      const hasMerchantCb = isMerchantCallback(data?.iframe_redirection_url)
+        || isMerchantCallback(data?.redirect_url)
+        || isMerchantCallback(data?.url);
+
+      if (hasMerchantCb) {
+        console.error(
+          '[paymobService] Wallet pay returned merchant callback instead of Paymob auth URL. ' +
+          'This usually means the wallet phone number (identifier) is invalid or Paymob ' +
+          'could not generate a wallet session. ' +
+          `identifier=${identifier}`
+        );
+        throw new Error(
+          '[Paymob] Wallet authorization URL is the merchant callback, not a Paymob payment page. ' +
+          'Ensure the wallet phone number is a valid registered mobile wallet number.'
+        );
+      }
+
+      if (!data?.pending) {
+        console.warn('[Paymob] Wallet pay response (no valid Paymob URL):', JSON.stringify(data));
+        throw new Error('[Paymob] Wallet redirect URL was not returned in pay response.');
+      }
+
+      // pending=true with no URL is valid for async wallet flows
+      console.log('[paymobService] Wallet: pending=true, no authorization URL (async flow).');
     }
 
     console.log(`✅ [paymobService] Wallet redirect URL generated for order ${paymobOrderId}`);

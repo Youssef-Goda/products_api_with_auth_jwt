@@ -261,8 +261,10 @@ async function initiatePayment(req, res) {
       return res.status(200).json({
         success:      true,
         payment_type: 'wallet',
-        redirect_url: walletResult.redirectUrl,
-        iframe_url:   walletResult.redirectUrl, // Backward-compatible with existing Flutter client code
+        // payment_url is the canonical field Flutter reads to open the authorization page.
+        // iframe_url kept for backward compatibility with any older client versions.
+        payment_url:  walletResult.redirectUrl,
+        iframe_url:   walletResult.redirectUrl,
         pending:      walletResult.pending,
       });
     }
@@ -677,7 +679,12 @@ function handleCallback(req, res) {
     code:     txn_response_code,
   });
 
-  const redirectUrl = `${frontendBase}/#/checkout/status?${params.toString()}`;
+  // ── Build the Flutter deep-link URL ──────────────────────────────────────
+  // Flutter web uses usePathUrlStrategy() (no hash routing), so the redirect
+  // must be a plain path URL — NOT a hash URL like /#/checkout/status.
+  // Hash URLs with path strategy result in Flutter seeing path='/' and routing
+  // to HomeScreen instead of CheckoutStatusScreen.
+  const redirectUrl = `${frontendBase}/checkout/status?${params.toString()}`;
 
   console.log(`↩️ [paymobCallback] Redirecting browser → ${redirectUrl}`);
   return res.redirect(302, redirectUrl);
