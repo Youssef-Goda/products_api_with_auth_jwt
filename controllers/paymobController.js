@@ -49,6 +49,25 @@ function cleanEnv(val) {
   return String(val).trim().replace(/^["']|["']$/g, '');
 }
 
+// Helper: Validates Egyptian mobile phone numbers (010, 011, 012, 015)
+function isValidEgyptianMobile(phone) {
+  if (!phone || typeof phone !== 'string') return false;
+  const clean = phone.trim().replace(/\s+/g, '');
+
+  // Must match Egyptian mobile format:
+  // 010/011/012/015 + 8 digits (11 digits total)
+  // or +2010/2011/2012/2015 + 8 digits (13 chars)
+  // or 2010/2011/2012/2015 + 8 digits (12 digits)
+  const egRegex = /^(?:\+?201|01)[0125]\d{8}$/;
+  if (!egRegex.test(clean)) return false;
+
+  // Reject dummy numbers where all 8 suffix digits are identical (e.g., 01000000000)
+  const suffix = clean.slice(-8);
+  if (/^(\d)\1{7}$/.test(suffix)) return false;
+
+  return true;
+}
+
 // ── Paymob URL bases ──────────────────────────────────────────────────────────
 // Card payments: iframe embed
 const PAYMOB_IFRAME_BASE = 'https://accept.paymob.com/api/acceptance/iframes';
@@ -238,12 +257,21 @@ async function initiatePayment(req, res) {
 
     // ── 5b. Mobile Wallet (UIG) ──────────────────────────────────────────────
     if (method === 'wallet') {
+      const rawWalletNum = String(req.body?.wallet_number || req.body?.phone_number || '').trim();
+
+      if (!isValidEgyptianMobile(rawWalletNum)) {
+        return res.status(400).json({
+          success: false,
+          message: 'A valid Egyptian mobile wallet phone number (e.g., 01012345678) is required for mobile wallet payments.',
+        });
+      }
+
       const walletResult = await generateWalletRedirectUrl(
         authToken,
         paymobOrder,
         amountCents,
         billingData,
-        req.body?.wallet_number || req.body?.phone_number
+        rawWalletNum
       );
 
       await supabase
@@ -643,17 +671,25 @@ function handleCallback(req, res) {
   );
 
   // ── Resolve the frontend base URL — never hardcode a port ─────────────────
-  // Priority:
-  //   1. FRONTEND_URL env var   — set this on Vercel / .env for every environment
-  //   2. HTTP Referer / Origin  — browser sends this; handy in dev with ngrok
-  //   3. Fallback JSON 200      — tells the dev to set the env var
-  let frontendBase = cleanEnv(process.env.FRONTEND_URL);
+  // Note: FRONTEND_URL must be set per-environment (Vercel prod vs local .env).
+  // In local development, the frontend port may vary, so we allow dynamic fallbacks.
+  let frontendBase = '';
+  const isProd = process.env.NODE_ENV === 'production';
 
-  if (!frontendBase) {
-    const referer = req.get('Referer') || req.get('Origin') || '';
-    if (referer) {
-      try { frontendBase = new URL(referer).origin; } catch { frontendBase = ''; }
+  if (!isProd) {
+    // Local dev: prefer explicit LOCAL_FRONTEND_URL or dynamic Referer/Origin
+    frontendBase = cleanEnv(process.env.LOCAL_FRONTEND_URL);
+    if (!frontendBase) {
+      const referer = req.get('Referer') || req.get('Origin') || '';
+      if (referer) {
+        try { frontendBase = new URL(referer).origin; } catch { /* ignore */ }
+      }
     }
+  }
+
+  // Fallback to FRONTEND_URL (primary for production, fallback for local dev)
+  if (!frontendBase) {
+    frontendBase = cleanEnv(process.env.FRONTEND_URL);
   }
 
   if (!frontendBase) {
