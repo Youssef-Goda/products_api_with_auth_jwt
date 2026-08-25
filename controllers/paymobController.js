@@ -401,14 +401,25 @@ function verifyPaymobHmac(body, receivedHmac) {
     .update(concatenated)
     .digest('hex');
 
+  let isValid = false;
   try {
-    return crypto.timingSafeEqual(
+    isValid = crypto.timingSafeEqual(
       Buffer.from(expected, 'hex'),
       Buffer.from(receivedHmac, 'hex')
     );
   } catch {
-    return false;
+    isValid = false;
   }
+
+  console.log('[paymobWebhook] HMAC verification result:', {
+    received_len: receivedHmac?.length ?? 0,
+    expected_len: expected?.length ?? 0,
+    received_preview: receivedHmac ? `${receivedHmac.slice(0, 8)}...${receivedHmac.slice(-8)}` : null,
+    expected_preview: expected ? `${expected.slice(0, 8)}...${expected.slice(-8)}` : null,
+    matched: isValid,
+  });
+
+  return isValid;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
