@@ -129,25 +129,55 @@ router.post('/', authenticateToken, async (req, res) => {
 
     // 1️⃣  Insert the order row: 'pending' for COD, 'pending_payment' for online payments
     const initialStatus = payment_method === 'cod' ? 'pending' : 'pending_payment';
-    const { data: orderRow, error: orderErr } = await supabase
-      .from('orders')
-      .insert({
-        user_id: userId,
-        shipping_address_id,
-        payment_method,
-        status: initialStatus,
-        payment_status: 'pending',
-        subtotal,
-        tax,
-        total,
-        notes: notes || null,
-      })
-      .select()
-      .single();
+    let orderRow;
+    try {
+      const { data, error: orderErr } = await supabase
+        .from('orders')
+        .insert({
+          user_id: userId,
+          shipping_address_id,
+          payment_method,
+          status: initialStatus,
+          payment_status: 'pending',
+          subtotal,
+          tax,
+          total,
+          notes: notes || null,
+        })
+        .select()
+        .single();
 
-    if (orderErr) throw orderErr;
+      if (orderErr) throw orderErr;
+      orderRow = data;
+    } catch (insertErr) {
+      // If DB has a constraint on status 'pending_payment', fall back to status 'pending'
+      if (initialStatus === 'pending_payment') {
+        console.warn(`⚠️ [Orders] DB constraint on status '${initialStatus}': ${insertErr.message} — falling back to status='pending'`);
+        const { data: fbData, error: fbErr } = await supabase
+          .from('orders')
+          .insert({
+            user_id: userId,
+            shipping_address_id,
+            payment_method,
+            status: 'pending',
+            payment_status: 'pending',
+            subtotal,
+            tax,
+            total,
+            notes: notes || null,
+          })
+          .select()
+          .single();
+
+        if (fbErr) throw fbErr;
+        orderRow = fbData;
+      } else {
+        throw insertErr;
+      }
+    }
+
     const orderId = orderRow.id;
-    console.log(`✅ [Orders] Order row created (pending): ${orderId}`);
+    console.log(`✅ [Orders] Order row created: ${orderId} (status=${orderRow.status})`);
 
     // 2️⃣  Bulk-insert order_items
     const itemsPayload = items.map((item) => ({

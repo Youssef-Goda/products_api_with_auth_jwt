@@ -145,6 +145,55 @@ app.use('/api/v1/banners',    bannerRoutes);
 app.use('/api/v1/orders',     orderRoutes);   // exposes GET /api/v1/orders/:id/payment-status
 // Note: /api/v1/payments/paymob is already mounted above express.json()
 
+// ── Process Level Exception Protection ────────────────────────────────────────
+process.on('unhandledRejection', (reason) => {
+  console.error('🚨 [Unhandled Rejection]:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('💥 [Uncaught Exception]:', err);
+});
+
+// ── Global Error Handling Middleware (CORS Safe) ──────────────────────────────
+app.use((err, req, res, next) => {
+  console.error('🔥 [Unhandled API Error]:', err.stack || err.message || err);
+
+  const origin = req.get('Origin');
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.setHeader('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+
+  const statusCode = err.status || err.statusCode || (res.statusCode >= 400 ? res.statusCode : 500);
+
+  if (!res.headersSent) {
+    res.status(statusCode).json({
+      success: false,
+      message: err.message || 'An unexpected server error occurred.',
+      error: process.env.NODE_ENV !== 'production' ? String(err.stack || err) : undefined,
+    });
+  }
+});
+
+// ── Handle 404 Route Not Found ────────────────────────────────────────────────
+app.use((req, res) => {
+  const origin = req.get('Origin');
+  if (origin) {
+    res.setHeader('Access-Control-Allow-Origin', origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+  } else {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+  res.status(404).json({
+    success: false,
+    message: `Endpoint ${req.method} ${req.originalUrl} not found.`,
+  });
+});
+
 const PORT = process.env.PORT || 5000;
 
 sequelize.sync()

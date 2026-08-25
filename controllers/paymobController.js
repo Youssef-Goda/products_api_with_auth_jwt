@@ -569,19 +569,32 @@ async function handleWebhook(req, res) {
   //   initiatePayment only sets 'initiated'.
   const finalStatus = (isSuccess && !isPending) ? 'paid' : 'failed';
 
-  const { error: updateErr } = await supabase
-    .from('orders')
-    .update({
-      payment_status:        finalStatus,
-      paymob_transaction_id: paymobTransactionId || null,
-      // Confirm the order on successful payment, or mark as cancelled if failed
-      status:                finalStatus === 'paid' ? 'confirmed' : 'cancelled',
-      updated_at: new Date().toISOString(),
-    })
-    .eq('id', internalOrderId);
+  try {
+    const { error: updateErr } = await supabase
+      .from('orders')
+      .update({
+        payment_status:        finalStatus,
+        paymob_transaction_id: paymobTransactionId || null,
+        // Confirm the order on successful payment, or mark as cancelled if failed
+        status:                finalStatus === 'paid' ? 'confirmed' : 'cancelled',
+        updated_at:            new Date().toISOString(),
+      })
+      .eq('id', internalOrderId);
 
-  if (updateErr) {
-    console.error(`❌ [paymobWebhook] DB update failed for order ${internalOrderId}: ${updateErr.message}`);
+    if (updateErr) {
+      console.warn(`⚠️ [paymobWebhook] Status update failed: ${updateErr.message} — trying fallback (status=pending)`);
+      await supabase
+        .from('orders')
+        .update({
+          payment_status:        finalStatus,
+          paymob_transaction_id: paymobTransactionId || null,
+          status:                'pending',
+          updated_at:            new Date().toISOString(),
+        })
+        .eq('id', internalOrderId);
+    }
+  } catch (updExc) {
+    console.error(`❌ [paymobWebhook] DB update exception for order ${internalOrderId}: ${updExc.message}`);
   }
 
   // ── 8. On successful payment: clear cart & send confirmation email ────────
