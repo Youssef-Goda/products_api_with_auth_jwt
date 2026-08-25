@@ -260,13 +260,17 @@ async function generateWalletRedirectUrl(authToken, paymobOrderId, amountCents, 
 
     // ── Strict Paymob URL validation ──────────────────────────────────────────
     // The merchant callback (PAYMOB_REDIRECT_URL) must NEVER be returned as the
-    // wallet authorization URL. Valid Paymob payment pages are always hosted on
-    // https://accept.paymob.com/.
-    const PAYMOB_HOST       = 'https://accept.paymob.com/';
-    const merchantCallback  = cleanEnv(process.env.PAYMOB_REDIRECT_URL);
+    // wallet authorization URL. Valid Paymob payment pages are hosted on
+    // https://accept.paymob.com/ (production) or https://accept.paymobsolutions.com/ (sandbox/test).
+    const PAYMOB_HOSTS = [
+      'https://accept.paymob.com/',
+      'https://accept.paymobsolutions.com/',
+    ];
+    const merchantCallback = cleanEnv(process.env.PAYMOB_REDIRECT_URL);
 
     function isValidPaymobUrl(url) {
-      return typeof url === 'string' && url.startsWith(PAYMOB_HOST);
+      if (typeof url !== 'string') return false;
+      return PAYMOB_HOSTS.some((host) => url.startsWith(host));
     }
 
     function isMerchantCallback(url) {
