@@ -686,29 +686,59 @@ async function handleCallback(req, res) {
     id:       txnId   = '',
     merchant_order_id = '',
     order_id          = '',
-    order:    paymobOrder = '',
+    order:    paymobNumericOrderId = '',
     txn_response_code = '',
   } = req.query;
 
-  const targetOrderId = merchant_order_id || order_id || paymobOrder || '';
+  // ── Safely resolve our internal order UUID ──────────────────────────────────
+  // Priority:
+  //   1. merchant_order_id — Paymob echoes back the UUID we passed at registerOrder.
+  //      This is the canonical, most reliable source.
+  //   2. order_id          — Some Paymob integration variants send it as order_id.
+  //   3. DB lookup by Paymob numeric order ID — last resort; avoids leaking the
+  //      raw numeric Paymob ID as if it were our internal UUID.
+  let orderId = merchant_order_id || order_id || '';
+
+  if (!orderId && paymobNumericOrderId) {
+    console.warn(
+      `⚠️ [paymobCallback] merchant_order_id missing — attempting DB lookup by paymob numeric order id: ${paymobNumericOrderId}`
+    );
+    try {
+      const { data: orderRow } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('paymob_order_id', paymobNumericOrderId)
+        .maybeSingle();
+      if (orderRow?.id) {
+        orderId = orderRow.id;
+        console.log(`ℹ️ [paymobCallback] Resolved orderId=${orderId} via paymob_order_id lookup`);
+      } else {
+        console.warn(`⚠️ [paymobCallback] No order found for paymob_order_id=${paymobNumericOrderId}`);
+      }
+    } catch (lookupErr) {
+      console.warn(`⚠️ [paymobCallback] DB lookup for paymob_order_id failed: ${lookupErr.message}`);
+    }
+  }
+
+  const isSuccess = String(success).toLowerCase() === 'true';
 
   console.log(
     `📲 [paymobCallback] Received — success=${success} pending=${pending} ` +
-    `orderId=${targetOrderId} txnId=${txnId}`
+    `orderId=${orderId} txnId=${txnId}`
   );
 
   // If payment explicitly failed or cancelled, mark pending_payment order as cancelled
-  const isFailed = (success === 'false' || success === false) && (pending === 'false' || pending === false);
-  if (targetOrderId && isFailed) {
+  const isFailed = !isSuccess && (pending === 'false' || pending === false);
+  if (orderId && isFailed) {
     try {
       await supabase
         .from('orders')
         .update({ status: 'cancelled', payment_status: 'failed', updated_at: new Date().toISOString() })
-        .eq('id', targetOrderId)
+        .eq('id', orderId)
         .eq('status', 'pending_payment');
-      console.log(`ℹ️ [paymobCallback] Marked order ${targetOrderId} as cancelled (payment failed/abandoned)`);
+      console.log(`ℹ️ [paymobCallback] Marked order ${orderId} as cancelled (payment failed/abandoned)`);
     } catch (err) {
-      console.warn(`⚠️ [paymobCallback] Could not mark order ${targetOrderId} as cancelled: ${err.message}`);
+      console.warn(`⚠️ [paymobCallback] Could not mark order ${orderId} as cancelled: ${err.message}`);
     }
   }
 
@@ -735,7 +765,7 @@ async function handleCallback(req, res) {
     return res.status(200).json({
       success:  String(success),
       pending:  String(pending),
-      order_id: targetOrderId,
+      order_id: orderId,
       txn_id:   txnId,
       code:     txn_response_code,
       message:  'Set FRONTEND_URL env var to enable automatic browser redirect.',
@@ -745,8 +775,9 @@ async function handleCallback(req, res) {
   try { frontendBase = new URL(frontendBase).origin; }
   catch { frontendBase = frontendBase.split('#')[0].replace(/\/+$/, ''); }
 
+  // ── Build redirect — order_id is always explicit in the query string ────────
   const params = new URLSearchParams({
-    order_id: targetOrderId,
+    order_id: orderId,
     success:  String(success),
     pending:  String(pending),
     txn_id:   String(txnId),
