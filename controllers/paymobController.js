@@ -574,8 +574,8 @@ async function handleWebhook(req, res) {
     .update({
       payment_status:        finalStatus,
       paymob_transaction_id: paymobTransactionId || null,
-      // Confirm the order only on successful payment
-      ...(finalStatus === 'paid' ? { status: 'confirmed' } : {}),
+      // Confirm the order on successful payment, or mark as cancelled if failed
+      status:                finalStatus === 'paid' ? 'confirmed' : 'cancelled',
       updated_at: new Date().toISOString(),
     })
     .eq('id', internalOrderId);
@@ -666,29 +666,44 @@ async function handleWebhook(req, res) {
 // to the Flutter web app so the UI can poll GET /api/orders/:id/payment-status
 // (which is populated exclusively by the HMAC-verified webhook).
 // ══════════════════════════════════════════════════════════════════════════════
-function handleCallback(req, res) {
+async function handleCallback(req, res) {
   const {
     success           = 'false',
     pending           = 'false',
     id:       txnId   = '',
     merchant_order_id = '',
+    order_id          = '',
     order:    paymobOrder = '',
     txn_response_code = '',
   } = req.query;
 
+  const targetOrderId = merchant_order_id || order_id || paymobOrder || '';
+
   console.log(
     `📲 [paymobCallback] Received — success=${success} pending=${pending} ` +
-    `orderId=${merchant_order_id} txnId=${txnId}`
+    `orderId=${targetOrderId} txnId=${txnId}`
   );
 
+  // If payment explicitly failed or cancelled, mark pending_payment order as cancelled
+  const isFailed = (success === 'false' || success === false) && (pending === 'false' || pending === false);
+  if (targetOrderId && isFailed) {
+    try {
+      await supabase
+        .from('orders')
+        .update({ status: 'cancelled', payment_status: 'failed', updated_at: new Date().toISOString() })
+        .eq('id', targetOrderId)
+        .eq('status', 'pending_payment');
+      console.log(`ℹ️ [paymobCallback] Marked order ${targetOrderId} as cancelled (payment failed/abandoned)`);
+    } catch (err) {
+      console.warn(`⚠️ [paymobCallback] Could not mark order ${targetOrderId} as cancelled: ${err.message}`);
+    }
+  }
+
   // ── Resolve the frontend base URL — never hardcode a port ─────────────────
-  // Note: FRONTEND_URL must be set per-environment (Vercel prod vs local .env).
-  // In local development, the frontend port may vary, so we allow dynamic fallbacks.
   let frontendBase = '';
   const isProd = process.env.NODE_ENV === 'production';
 
   if (!isProd) {
-    // Local dev: prefer explicit LOCAL_FRONTEND_URL or dynamic Referer/Origin
     frontendBase = cleanEnv(process.env.LOCAL_FRONTEND_URL);
     if (!frontendBase) {
       const referer = req.get('Referer') || req.get('Origin') || '';
@@ -698,7 +713,6 @@ function handleCallback(req, res) {
     }
   }
 
-  // Fallback to FRONTEND_URL (primary for production, fallback for local dev)
   if (!frontendBase) {
     frontendBase = cleanEnv(process.env.FRONTEND_URL);
   }
@@ -706,31 +720,26 @@ function handleCallback(req, res) {
   if (!frontendBase) {
     console.warn('⚠️ [paymobCallback] FRONTEND_URL not set, no Referer — returning params as JSON');
     return res.status(200).json({
-      success, pending,
-      order_id: merchant_order_id,
+      success:  String(success),
+      pending:  String(pending),
+      order_id: targetOrderId,
       txn_id:   txnId,
       code:     txn_response_code,
       message:  'Set FRONTEND_URL env var to enable automatic browser redirect.',
     });
   }
 
-  // Strip any trailing path/fragment → clean origin
   try { frontendBase = new URL(frontendBase).origin; }
   catch { frontendBase = frontendBase.split('#')[0].replace(/\/+$/, ''); }
 
   const params = new URLSearchParams({
-    success,
-    pending,
-    order_id: merchant_order_id,
-    txn_id:   txnId,
-    code:     txn_response_code,
+    order_id: targetOrderId,
+    success:  String(success),
+    pending:  String(pending),
+    txn_id:   String(txnId),
+    code:     String(txn_response_code),
   });
 
-  // ── Build the Flutter deep-link URL ──────────────────────────────────────
-  // Flutter web uses usePathUrlStrategy() (no hash routing), so the redirect
-  // must be a plain path URL — NOT a hash URL like /#/checkout/status.
-  // Hash URLs with path strategy result in Flutter seeing path='/' and routing
-  // to HomeScreen instead of CheckoutStatusScreen.
   const redirectUrl = `${frontendBase}/checkout/status?${params.toString()}`;
 
   console.log(`↩️ [paymobCallback] Redirecting browser → ${redirectUrl}`);

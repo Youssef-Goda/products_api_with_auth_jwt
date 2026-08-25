@@ -127,14 +127,15 @@ router.post('/', authenticateToken, async (req, res) => {
       }
     }
 
-    // 1️⃣  Insert the order row with initial pending status
+    // 1️⃣  Insert the order row: 'pending' for COD, 'pending_payment' for online payments
+    const initialStatus = payment_method === 'cod' ? 'pending' : 'pending_payment';
     const { data: orderRow, error: orderErr } = await supabase
       .from('orders')
       .insert({
         user_id: userId,
         shipping_address_id,
         payment_method,
-        status: 'pending',
+        status: initialStatus,
         payment_status: 'pending',
         subtotal,
         tax,
@@ -208,6 +209,7 @@ router.get('/', authenticateToken, async (req, res) => {
       .from('orders')
       .select('*, order_items(*), shipping_addresses(*)')
       .eq('user_id', userId)
+      .neq('status', 'pending_payment')
       .order('created_at', { ascending: false });
 
     if (error) throw error;
