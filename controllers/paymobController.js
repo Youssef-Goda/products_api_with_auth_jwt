@@ -29,13 +29,7 @@ const crypto    = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const { logActivity }  = require('../services/activityLogger');
 const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
-const {
-  getAuthToken,
-  registerOrder,
-  generatePaymentKey,
-  generateCashReference,
-  generateWalletRedirectUrl,
-} = require('../services/paymobService');
+const { createIntention } = require('../services/paymobService');
 
 // ── Supabase admin client (bypass RLS) ───────────────────────────────────────
 const supabase = createClient(
@@ -130,7 +124,9 @@ async function initiatePayment(req, res) {
 
     const { order_id, payment_method } = req.body;
 
-    const method = (payment_method || 'card').toLowerCase();
+    let method = (payment_method || 'card').toLowerCase();
+    if (method === 'online') method = 'card';
+
     if (!['card', 'wallet', 'cash', 'fawry'].includes(method)) {
       return res.status(400).json({
         success: false,
@@ -139,6 +135,15 @@ async function initiatePayment(req, res) {
     }
 
     const isCash = method === 'cash' || method === 'fawry';
+
+    // ── 0. Check secret key is configured ────────────────────────────────────
+    const secretKey = cleanEnv(process.env.PAYMOB_SECRET_KEY || process.env.PAYMOB_API_KEY);
+    if (!secretKey) {
+      return res.status(500).json({
+        success: false,
+        message: 'Payment initialization failed: PAYMOB_SECRET_KEY / PAYMOB_API_KEY is not configured on the server.',
+      });
+    }
 
     // ── 1. Verify order exists and belongs to this user ──────────────────────
     const { data: order, error: orderErr } = await supabase
@@ -220,113 +225,41 @@ async function initiatePayment(req, res) {
       }
     }
 
-    // ── 5. Call Paymob APIs ──────────────────────────────────────────────────
-    const authToken   = await getAuthToken();
-    // Pass order_id as merchantOrderId — Paymob will echo it back as
-    // txn.order.merchant_order_id in the HMAC-verified server-to-server webhook,
-    // which is the ONLY mechanism handleWebhook uses to resolve the local order.
-    const paymobOrder = await registerOrder(authToken, amountCents, order_id);
-
-    // ── 5a. Cash / Fawry kiosk ───────────────────────────────────────────────
-    if (isCash) {
-      const { billReference, expiresAt } = await generateCashReference(
-        authToken, paymobOrder, amountCents, billingData
-      );
-
-      await supabase
-        .from('orders')
-        .update({ payment_status: 'initiated', updated_at: new Date().toISOString() })
-        .eq('id', order_id);
-
-      await logActivity(userId, 'PAYMENT_INITIATED', 'order', order_id, {
-        payment_method: 'cash',
-        amount_cents:   amountCents,
-        bill_reference: billReference,
-      });
-
-      console.log(`✅ [paymobController] Cash reference issued for order ${order_id}: ${billReference}`);
-
-      return res.status(200).json({
-        success:          true,
-        payment_type:     'cash',
-        reference_number: billReference,
-        expire_date:      expiresAt,
-        amount_cents:     amountCents,
-      });
-    }
-
-    // ── 5b. Mobile Wallet (UIG) ──────────────────────────────────────────────
-    if (method === 'wallet') {
-      const rawWalletNum = String(req.body?.wallet_number || req.body?.phone_number || '').trim();
-
-      if (!isValidEgyptianMobile(rawWalletNum)) {
-        return res.status(400).json({
-          success: false,
-          message: 'A valid Egyptian mobile wallet phone number (e.g., 01012345678) is required for mobile wallet payments.',
-        });
-      }
-
-      const walletResult = await generateWalletRedirectUrl(
-        authToken,
-        paymobOrder,
-        amountCents,
-        billingData,
-        rawWalletNum
-      );
-
-      await supabase
-        .from('orders')
-        .update({ payment_status: 'initiated', updated_at: new Date().toISOString() })
-        .eq('id', order_id);
-
-      await logActivity(userId, 'PAYMENT_INITIATED', 'order', order_id, {
-        payment_method: 'wallet',
-        amount_cents:   amountCents,
-      });
-
-      console.log(`✅ [paymobController] Wallet payment initiated for order ${order_id}`);
-
-      return res.status(200).json({
-        success:      true,
-        payment_type: 'wallet',
-        // payment_url is the canonical field Flutter reads to open the authorization page.
-        // iframe_url kept for backward compatibility with any older client versions.
-        payment_url:  walletResult.redirectUrl,
-        iframe_url:   walletResult.redirectUrl,
-        pending:      walletResult.pending,
-      });
-    }
-
-    // ── 5c. Credit / Debit Card (VPC) ─────────────────────────────────────────
-    const paymentKey = await generatePaymentKey(
-      authToken, paymobOrder, amountCents, integrationId, billingData
+    // ── 5. Call Paymob Intention API ─────────────────────────────────────────
+    const intention = await createIntention(
+      amountCents, 
+      'EGP', 
+      [integrationId], 
+      billingData, 
+      { merchant_order_id: order_id } // pass order_id in extras so it comes back in webhook
     );
 
-    const iframeId = cleanEnv(process.env.PAYMOB_IFRAME_ID);
-    if (!iframeId) {
-      return res.status(500).json({
+    if (!intention || !intention.client_secret) {
+      console.error('❌ [paymobController] Paymob Intention API did not yield client_secret. Intention payload:', intention);
+      return res.status(502).json({
         success: false,
-        message: 'Payment initialization failed: PAYMOB_IFRAME_ID is not configured.',
+        message: 'Payment initialization failed: Paymob did not return a valid client_secret.',
       });
     }
-    const iframeUrl = `${PAYMOB_IFRAME_BASE}/${iframeId}?payment_token=${paymentKey}`;
 
+    // Update order status in DB
     await supabase
       .from('orders')
       .update({ payment_status: 'initiated', updated_at: new Date().toISOString() })
       .eq('id', order_id);
 
     await logActivity(userId, 'PAYMENT_INITIATED', 'order', order_id, {
-      payment_method: 'card',
+      payment_method: method,
       amount_cents:   amountCents,
     });
 
-    console.log(`✅ [paymobController] Card payment initiated for order ${order_id}`);
+    console.log(`✅ [paymobController] Payment intention created for order ${order_id}`);
 
     return res.status(200).json({
-      success:      true,
-      payment_type: 'card',
-      iframe_url:   iframeUrl,
+      success:       true,
+      payment_type:  method,
+      client_secret: intention.client_secret,
+      public_key:    cleanEnv(process.env.PAYMOB_PUBLIC_KEY),
     });
 
   } catch (err) {
@@ -341,7 +274,7 @@ async function initiatePayment(req, res) {
     ) {
       return res.status(403).json({
         success: false,
-        message: 'Paymob Authentication Failed: Incorrect credentials.',
+        message: `Paymob Authentication Failed: ${reason}`,
       });
     }
 
@@ -480,7 +413,11 @@ async function handleWebhook(req, res) {
   const isSuccess           = txn?.success === true;
   const isPending           = txn?.pending === true;
   const amountCentsReported = parseInt(txn?.amount_cents ?? '0', 10);
-  const internalOrderId     = txn?.order?.merchant_order_id ?? null;
+  const internalOrderId     = txn?.order?.merchant_order_id 
+    ?? txn?.payment_key_claims?.billing_data?.merchant_order_id 
+    ?? txn?.intention?.extras?.merchant_order_id 
+    ?? txn?.extras?.merchant_order_id 
+    ?? null;
 
   console.log(`📬 [paymobWebhook] txn=${paymobTransactionId} success=${isSuccess} pending=${isPending} orderId=${internalOrderId}`);
 
