@@ -71,15 +71,20 @@ function sanitiseError(err) {
 // Returns an intention object containing a client_secret.
 // ══════════════════════════════════════════════════════════════════════════════
 async function createIntention(amountCents, currency = 'EGP', paymentMethods = [], billingData = {}, extras = {}) {
-  const rawSecretKey = cleanEnv(process.env.PAYMOB_SECRET_KEY || process.env.PAYMOB_API_KEY);
-  if (!rawSecretKey) {
-    throw new Error('[Paymob] Neither PAYMOB_SECRET_KEY nor PAYMOB_API_KEY is configured in the server environment.');
+  const secretKey = cleanEnv(process.env.PAYMOB_SECRET_KEY || process.env.PAYMOB_API_KEY);
+
+  const keyPreview = secretKey
+    ? `${secretKey.slice(0, 8)}${'*'.repeat(Math.max(0, secretKey.length - 8))}`
+    : 'UNDEFINED';
+
+  console.log(`🔑 [paymobService] Runtime PAYMOB_SECRET_KEY check: len=${secretKey.length}, preview=${keyPreview}`);
+
+  if (!secretKey) {
+    console.error('❌ [paymobService] PAYMOB_SECRET_KEY is undefined in process.env!');
+    throw new Error('PAYMOB_SECRET_KEY is undefined in server environment.');
   }
 
-  // Strip existing prefix if present to normalize
-  const keyBody = rawSecretKey.replace(/^(Token|Bearer|SecretKey)\s+/i, '').trim();
-  const authHeader = `Token ${keyBody}`;
-  const redactedAuth = `Token ${keyBody.length > 8 ? `${keyBody.slice(0, 4)}****${keyBody.slice(-4)}` : '****'}`;
+  const redactedAuth = `Token ${secretKey.slice(0, 8)}${'*'.repeat(Math.max(0, secretKey.length - 8))}`;
 
   // Paymob Intention API requires billing_data and customer objects
   const customerData = {
@@ -126,7 +131,7 @@ async function createIntention(amountCents, currency = 'EGP', paymentMethods = [
 
     const response = await axios.post('https://accept.paymob.com/v1/intention/', payload, {
       headers: {
-        'Authorization': authHeader,
+        'Authorization': `Token ${secretKey.replace(/^Token\s+/i, '')}`,
         'Content-Type': 'application/json'
       },
       timeout: 10_000,
