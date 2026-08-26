@@ -27,10 +27,14 @@ const paymobClient = axios.create({
   headers: { 'Content-Type': 'application/json' },
 });
 
-// Helper: Strips quotes and whitespace from environment variables
+// Helper: Strips quotes, backslashes, and whitespace from environment variables
 function cleanEnv(val) {
   if (!val) return '';
-  return String(val).trim().replace(/^["']|["']$/g, '');
+  return String(val)
+    .trim()
+    .replace(/[\r\n]/g, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -67,15 +71,20 @@ function sanitiseError(err) {
 // Returns an intention object containing a client_secret.
 // ══════════════════════════════════════════════════════════════════════════════
 async function createIntention(amountCents, currency = 'EGP', paymentMethods = [], billingData = {}, extras = {}) {
-  const secretKey = cleanEnv(process.env.PAYMOB_SECRET_KEY || process.env.PAYMOB_API_KEY);
-  if (!secretKey) {
+  const rawSecretKey = cleanEnv(process.env.PAYMOB_SECRET_KEY || process.env.PAYMOB_API_KEY);
+  if (!rawSecretKey) {
     throw new Error('[Paymob] Neither PAYMOB_SECRET_KEY nor PAYMOB_API_KEY is configured in the server environment.');
   }
+
+  // Strip existing prefix if present to normalize
+  const keyBody = rawSecretKey.replace(/^(Token|Bearer|SecretKey)\s+/i, '').trim();
+  const authHeader = `Token ${keyBody}`;
+  const redactedAuth = `Token ${keyBody.length > 8 ? `${keyBody.slice(0, 4)}****${keyBody.slice(-4)}` : '****'}`;
 
   // Paymob Intention API requires billing_data and customer objects
   const customerData = {
     first_name:   billingData.first_name  ?? 'Customer',
-    last_name:    billingData.last_name   ?? 'User',
+    last_name:    billingData.lastName    ?? billingData.last_name ?? 'User',
     email:        billingData.email       ?? 'customer@example.com',
     phone_number: billingData.phone_number ?? '+201000000000',
   };
@@ -93,10 +102,6 @@ async function createIntention(amountCents, currency = 'EGP', paymentMethods = [
     state:        billingData.state       ?? 'Cairo',
   };
 
-  const authHeader = secretKey.startsWith('Token ') || secretKey.startsWith('SecretKey ')
-    ? secretKey
-    : `Token ${secretKey}`;
-
   try {
     const payload = {
       amount: amountCents,
@@ -107,7 +112,12 @@ async function createIntention(amountCents, currency = 'EGP', paymentMethods = [
       extras: extras,
     };
 
-    console.log('📡 [paymobService] Sending Intention API request to https://accept.paymob.com/v1/intention/:', {
+    console.log('📡 [paymobService] Sending Intention API request:', {
+      url: 'https://accept.paymob.com/v1/intention/',
+      headers: {
+        'Authorization': redactedAuth,
+        'Content-Type': 'application/json',
+      },
       amount: payload.amount,
       currency: payload.currency,
       payment_methods: payload.payment_methods,
