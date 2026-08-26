@@ -101,24 +101,25 @@ async function createIntention(amountCents, currency = 'EGP', paymentMethods = [
     const payload = {
       amount: amountCents,
       currency,
-      payment_methods: paymentMethods.map(id => parseInt(id, 10)),
+      payment_methods: paymentMethods.map(id => parseInt(id, 10)).filter(id => !isNaN(id)),
       billing_data: fullBillingData,
       customer: customerData,
       extras: extras,
     };
 
-    console.log('📡 [paymobService] Sending Intention API request:', {
+    console.log('📡 [paymobService] Sending Intention API request to https://accept.paymob.com/v1/intention/:', {
       amount: payload.amount,
       currency: payload.currency,
       payment_methods: payload.payment_methods,
       customer_email: payload.customer.email,
     });
 
-    const response = await paymobClient.post('/v1/intention/', payload, {
+    const response = await axios.post('https://accept.paymob.com/v1/intention/', payload, {
       headers: {
         'Authorization': authHeader,
         'Content-Type': 'application/json'
-      }
+      },
+      timeout: 10_000,
     });
 
     if (!response.data?.client_secret) {
