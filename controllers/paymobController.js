@@ -303,7 +303,7 @@ const HMAC_FIELDS = [
   'is_refunded',
   'is_standalone_payment',
   'is_voided',
-  'order',
+  'order.id',
   'owner',
   'pending',
   'source_data.pan',
@@ -319,11 +319,16 @@ function verifyPaymobHmac(body, receivedHmac) {
   }
 
   const get = (obj, key) => {
-    if (key.startsWith('source_data.')) {
-      const subKey = key.split('.')[1];
-      return obj?.source_data?.[subKey] ?? '';
+    const keys = key.split('.');
+    let val = obj;
+    for (const k of keys) {
+      if (val == null) return '';
+      val = val[k];
     }
-    return obj?.[key] ?? '';
+    if (typeof val === 'boolean') {
+      return val ? 'true' : 'false';
+    }
+    return val ?? '';
   };
 
   const obj = body?.obj ?? body;
@@ -709,7 +714,7 @@ async function handleCallback(req, res) {
         .from('orders')
         .update({ status: 'cancelled', payment_status: 'failed', updated_at: new Date().toISOString() })
         .eq('id', orderId)
-        .eq('status', 'pending_payment');
+        .in('status', ['pending_payment', 'pending']);
       console.log(`ℹ️ [paymobCallback] Marked order ${orderId} as cancelled (payment failed/abandoned)`);
     } catch (err) {
       console.warn(`⚠️ [paymobCallback] Could not mark order ${orderId} as cancelled: ${err.message}`);
@@ -755,7 +760,7 @@ async function handleCallback(req, res) {
     success:  String(success),
     pending:  String(pending),
     txn_id:   String(txnId),
-    code:     String(txn_response_code),
+    txn_code: String(txn_response_code),
   });
 
   const redirectUrl = `${frontendBase}/checkout/status?${params.toString()}`;
