@@ -656,21 +656,38 @@ async function handleCallback(req, res) {
 
   // 🔴 Fallback: Recover missing order_id using txn_id after webhook sync
   if (!orderId && txnId) {
-    console.log(`⏳ [paymobCallback] orderId missing from query. Waiting 1.5s for webhook to sync txnId=${txnId}...`);
-    await new Promise(resolve => setTimeout(resolve, 1500));
-    try {
-      const { data: orderRow } = await supabase
-        .from('orders')
-        .select('id')
-        .eq('paymob_transaction_id', txnId)
-        .maybeSingle();
+    console.log(`⏳ [paymobCallback] orderId missing. Polling DB for txnId=${txnId} (max 3 attempts)...`);
+    
+    let attempts = 3;
+    let delayMs = 1500;
+    
+    while (attempts > 0 && !orderId) {
+      await new Promise(resolve => setTimeout(resolve, delayMs));
+      try {
+        const { data: orderRow } = await supabase
+          .from('orders')
+          .select('id')
+          .eq('paymob_transaction_id', txnId)
+          .maybeSingle();
 
-      if (orderRow?.id) {
-        orderId = orderRow.id;
-        console.log(`✅ [paymobCallback] Successfully recovered orderId=${orderId} via txnId lookup!`);
+        if (orderRow?.id) {
+          orderId = orderRow.id;
+          console.log(`✅ [paymobCallback] Successfully recovered orderId=${orderId} via txnId lookup!`);
+          break;
+        }
+      } catch (err) {
+        console.warn(`⚠️ [paymobCallback] DB lookup by txnId failed: ${err.message}`);
       }
-    } catch (err) {
-      console.warn(`⚠️ [paymobCallback] DB lookup by txnId failed: ${err.message}`);
+      
+      attempts--;
+      if (!orderId && attempts > 0) {
+        console.log(`⏳ [paymobCallback] orderId not found yet for txnId=${txnId}. Retrying in ${delayMs}ms...`);
+        delayMs += 500;
+      }
+    }
+    
+    if (!orderId) {
+      console.warn(`❌ [paymobCallback] Exhausted polling. Could not recover orderId for txnId=${txnId}.`);
     }
   }
 
