@@ -630,10 +630,9 @@ async function handleCallback(req, res) {
   // ── Safely resolve our internal order UUID ──────────────────────────────────
   // Priority:
   //   1. merchant_order_id — Paymob echoes back the UUID we passed at registerOrder.
-  //      This is the canonical, most reliable source.
   //   2. order_id          — Some Paymob integration variants send it as order_id.
-  //   3. DB lookup by Paymob numeric order ID — last resort; avoids leaking the
-  //      raw numeric Paymob ID as if it were our internal UUID.
+  //   3. DB lookup by Paymob numeric order ID — last resort.
+  //   4. DB lookup by txn_id — waits 1.5s for webhook to sync, then recovers it.
   let orderId = merchant_order_id || order_id || '';
 
   if (!orderId && paymobNumericOrderId) {
@@ -649,13 +648,34 @@ async function handleCallback(req, res) {
       if (orderRow?.id) {
         orderId = orderRow.id;
         console.log(`ℹ️ [paymobCallback] Resolved orderId=${orderId} via paymob_order_id lookup`);
-      } else {
-        console.warn(`⚠️ [paymobCallback] No order found for paymob_order_id=${paymobNumericOrderId}`);
       }
     } catch (lookupErr) {
       console.warn(`⚠️ [paymobCallback] DB lookup for paymob_order_id failed: ${lookupErr.message}`);
     }
   }
+
+  // 🔴 Fallback: Recover missing order_id using txn_id after webhook sync
+  if (!orderId && txnId) {
+    console.log(`⏳ [paymobCallback] orderId missing from query. Waiting 1.5s for webhook to sync txnId=${txnId}...`);
+    await new Promise(resolve => setTimeout(resolve, 1500));
+    try {
+      const { data: orderRow } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('paymob_transaction_id', txnId)
+        .maybeSingle();
+
+      if (orderRow?.id) {
+        orderId = orderRow.id;
+        console.log(`✅ [paymobCallback] Successfully recovered orderId=${orderId} via txnId lookup!`);
+      }
+    } catch (err) {
+      console.warn(`⚠️ [paymobCallback] DB lookup by txnId failed: ${err.message}`);
+    }
+  }
+
+
+
 
   const isSuccess = String(success).toLowerCase() === 'true';
 
