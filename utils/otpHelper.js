@@ -266,9 +266,9 @@ const sendOrderConfirmationEmail = async (toEmail, order, firstName = 'Customer'
                     <tbody>${itemsHtml}</tbody>
                 </table>
                 <div class="tot">
-                    <div class="tr"><span>Subtotal</span><span>${parseFloat(order.subtotal||0).toFixed(2)} EGP</span></div>
-                    ${order.tax ? `<div class="tr"><span>Tax</span><span>${parseFloat(order.tax).toFixed(2)} EGP</span></div>` : ''}
-                    <div class="tr g"><span>Grand Total</span><span>${parseFloat(order.total||0).toFixed(2)} EGP</span></div>
+                    <div class="tr"><span>Subtotal </span><span>${parseFloat(order.subtotal||0).toFixed(2)} EGP</span></div>
+                    ${order.tax ? `<div class="tr"><span>Tax </span><span>${parseFloat(order.tax).toFixed(2)} EGP</span></div>` : ''}
+                    <div class="tr g"><span>Grand Total </span><span>${parseFloat(order.total||0).toFixed(2)} EGP</span></div>
                 </div>
                 <p style="text-align:center;color:#999;font-size:13px;">Questions? Reply to this email.</p>
             </div>

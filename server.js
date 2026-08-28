@@ -47,7 +47,7 @@ function cleanEnv(val) {
 const rawAllowedOrigins = cleanEnv(process.env.ALLOWED_ORIGINS);
 const allowedOriginsList = rawAllowedOrigins
   ? rawAllowedOrigins.split(',').map((o) => cleanEnv(o)).filter(Boolean)
-  : ['http://localhost:3000', 'http://localhost:5000', 'http://127.0.0.1:3000'];
+  : ['http://localhost:3000', 'https://dealio-orcin.vercel.app'];
 
 const corsOptions = {
   origin: (origin, callback) => {
