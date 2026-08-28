@@ -115,6 +115,7 @@ async function createIntention(amountCents, currency = 'EGP', paymentMethods = [
       billing_data: fullBillingData,
       customer: customerData,
       extras: extras,
+      special_reference: extras.special_reference,
     };
 
     console.log('📡 [paymobService] Sending Intention API request:', {

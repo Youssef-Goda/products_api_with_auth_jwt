@@ -231,7 +231,7 @@ async function initiatePayment(req, res) {
       'EGP', 
       [integrationId], 
       billingData, 
-      { merchant_order_id: order_id } // pass order_id in extras so it comes back in webhook
+      { merchant_order_id: order_id, special_reference: order_id } // pass order_id in extras so it comes back in webhook
     );
 
     if (!intention || !intention.client_secret) {
@@ -418,7 +418,8 @@ async function handleWebhook(req, res) {
   const isSuccess           = txn?.success === true;
   const isPending           = txn?.pending === true;
   const amountCentsReported = parseInt(txn?.amount_cents ?? '0', 10);
-  const internalOrderId     = txn?.order?.merchant_order_id 
+  const internalOrderId     = txn?.special_reference
+    ?? txn?.order?.merchant_order_id 
     ?? txn?.payment_key_claims?.billing_data?.merchant_order_id 
     ?? txn?.intention?.extras?.merchant_order_id 
     ?? txn?.extras?.merchant_order_id 
@@ -627,6 +628,7 @@ async function handleCallback(req, res) {
     pending           = 'false',
     id:       txnId   = '',
     merchant_order_id = '',
+    special_reference = '',
     order_id          = '',
     order:    paymobNumericOrderId = '',
     txn_response_code = '',
@@ -634,11 +636,12 @@ async function handleCallback(req, res) {
 
   // ── Safely resolve our internal order UUID ──────────────────────────────────
   // Priority:
-  //   1. merchant_order_id — Paymob echoes back the UUID we passed at registerOrder.
-  //   2. order_id          — Some Paymob integration variants send it as order_id.
-  //   3. DB lookup by Paymob numeric order ID — last resort.
-  //   4. DB lookup by txn_id — waits 1.5s for webhook to sync, then recovers it.
-  let orderId = merchant_order_id || order_id || '';
+  //   1. special_reference — Passed during Intention creation
+  //   2. merchant_order_id — Paymob echoes back the UUID we passed at registerOrder.
+  //   3. order_id          — Some Paymob integration variants send it as order_id.
+  //   4. DB lookup by Paymob numeric order ID — last resort.
+  //   5. DB lookup by txn_id — waits 1.5s for webhook to sync, then recovers it.
+  let orderId = special_reference || merchant_order_id || order_id || '';
 
   if (!orderId && paymobNumericOrderId) {
     console.warn(
