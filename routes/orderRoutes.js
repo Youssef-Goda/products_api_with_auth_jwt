@@ -122,7 +122,7 @@ router.post('/', authenticateToken, async (req, res) => {
       if (activeOrders && activeOrders.length >= 3) {
         return res.status(400).json({
           success: false,
-          message: 'عذراً، لديك طلبات قيد التنفيذ بالفعل، يرجى انتظار توصيلها أولاً'
+          message: 'Sorry, you already have orders in progress. Please wait until they are delivered first.'
         });
       }
     }
@@ -316,7 +316,7 @@ router.get('/:id/payment-status', authenticateToken, async (req, res) => {
     if (!data) return res.status(404).json({ success: false, message: 'Order not found.' });
 
     // IDOR guard — only the order owner or an elevated role can query this
-    const userRole  = (req.user?.role || '').toLowerCase();
+    const userRole = (req.user?.role || '').toLowerCase();
     const isElevated = ['admin', 'owner', 'moderator', 'super_admin'].includes(userRole);
     if (data.user_id !== req.user.id && !isElevated) {
       return res.status(403).json({ success: false, message: 'Access denied to this order.' });
@@ -326,7 +326,7 @@ router.get('/:id/payment-status', authenticateToken, async (req, res) => {
       success: true,
       data: {
         payment_status: data.payment_status,  // 'pending' | 'initiated' | 'paid' | 'failed'
-        status:         data.status,          // 'pending' | 'confirmed' | etc.
+        status: data.status,          // 'pending' | 'confirmed' | etc.
       },
     });
   } catch (err) {
