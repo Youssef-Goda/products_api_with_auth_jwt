@@ -194,15 +194,36 @@ app.use((req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 5000;
+// const PORT = process.env.PORT || 5000;
 
-sequelize.sync()
-  .then(() => {
-    console.log('✅ Database connected and synced!');
-    app.listen(PORT, '0.0.0.0', () => {
-      console.log(`🚀 Server running on port ${PORT}`);
+// sequelize.sync()
+//   .then(() => {
+//     console.log('✅ Database connected and synced!');
+//     app.listen(PORT, '0.0.0.0', () => {
+//       console.log(`🚀 Server running on port ${PORT}`);
+//     });
+//   })
+//   .catch(err => {
+//     console.error('❌ Database connection error:', err);
+//   });
+
+
+
+// 🛑 التصدير الأساسي لمنصة Vercel Serverless (مهم جداً)
+module.exports = app;
+
+// 🚀 تشغيل الـ Listen والـ Sync محلياً فقط (Local Development)
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  const PORT = process.env.PORT || 5000;
+  
+  sequelize.sync()
+    .then(() => {
+      console.log('✅ Local Database connected and synced!');
+      app.listen(PORT, '0.0.0.0', () => {
+        console.log(`🚀 Server running locally on port ${PORT}`);
+      });
+    })
+    .catch(err => {
+      console.error('❌ Local Database connection error:', err);
     });
-  })
-  .catch(err => {
-    console.error('❌ Database connection error:', err);
-  });
+}
