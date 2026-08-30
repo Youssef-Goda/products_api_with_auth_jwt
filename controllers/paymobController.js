@@ -30,6 +30,9 @@ const { createClient } = require('@supabase/supabase-js');
 const { logActivity }  = require('../services/activityLogger');
 const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
 const { createIntention } = require('../services/paymobService');
+const { Op }              = require('sequelize');
+const Product             = require('../models/Product');
+const sequelize           = require('../config/database');
 
 // ── Supabase admin client (bypass RLS) ───────────────────────────────────────
 const supabase = createClient(
@@ -71,24 +74,168 @@ const PAYMOB_IFRAME_BASE = 'https://accept.paymob.com/api/acceptance/iframes';
 //       integration_id baked into the payment_token (PAYMOB_WALLET_INTEGRATION_ID).
 
 // ══════════════════════════════════════════════════════════════════════════════
-// Helper — calculate order amount in piastres from order_items in DB.
-// This is the single source of truth — the client-sent amount is ignored.
+// Helper — read the final order total from the persisted orders row.
+//
+// ROOT CAUSE FIX (Issue 1):
+//   The previous implementation summed unit_price × quantity from order_items,
+//   which equals subtotal only — it silently dropped tax, shipping, and any
+//   other fees stored on the order.  The Flutter app computes:
+//     total = subtotal + tax   (10 % of subtotal)
+//   and persists all three in orders.subtotal / orders.tax / orders.total.
+//
+//   This function now reads orders.total — the authoritative persisted total —
+//   directly.  It never recalculates tax, shipping, or discounts; those were
+//   already applied when the order was created.
+//
+// Example:
+//   subtotal = 50 EGP,  tax = 5 EGP,  orders.total = 55 EGP
+//   amountCents = Math.round(55 * 100) = 5500   ← CORRECT
+//   Previous code returned 5000 (50 EGP × 100)  ← WRONG
 // ══════════════════════════════════════════════════════════════════════════════
-async function calcAmountCentsFromDB(orderId) {
-  const { data: items, error } = await supabase
+async function calcAmountCentsFromOrder(orderId) {
+  const { data: order, error } = await supabase
+    .from('orders')
+    .select('subtotal, tax, total')
+    .eq('id', orderId)
+    .maybeSingle();
+
+  if (error) throw new Error(`DB error fetching order ${orderId}: ${error.message}`);
+  if (!order)  throw new Error(`Order ${orderId} not found when calculating amount`);
+
+  const subtotal   = parseFloat(order.subtotal  ?? 0);
+  const tax        = parseFloat(order.tax       ?? 0);
+  const finalTotal = parseFloat(order.total     ?? 0);
+
+  if (finalTotal <= 0) {
+    throw new Error(
+      `Order ${orderId} has an invalid total (${order.total}). Cannot initiate payment.`
+    );
+  }
+
+  const amountCents = Math.round(finalTotal * 100);
+
+  // Safe diagnostic log — no secrets, no card data
+  console.log(`💰 [paymobController] Order ${orderId} amount breakdown:`, {
+    orderId,
+    subtotal,
+    tax,
+    finalTotal,
+    amountCents,
+  });
+
+  return amountCents;
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
+// reduceStockForOrder
+//
+// Atomically decrements countInStock for every item in the given order.
+// Uses a Sequelize transaction so ALL decrements commit together or ALL
+// roll back — no partial stock reduction is possible.
+//
+// Each individual decrement uses a conditional UPDATE:
+//   UPDATE "Products"
+//   SET    "countInStock" = "countInStock" - qty
+//   WHERE  id = productId
+//     AND  "countInStock" >= qty
+//
+// If the WHERE condition is not met (stock insufficient or product missing),
+// 0 rows are affected → an error is thrown → the full Sequelize transaction
+// rolls back, restoring all previously decremented products to their original
+// counts.
+//
+// Returns: { success: true }  |  { success: false, error: string }
+//
+// TRANSACTION BOUNDARY NOTE:
+//   This Sequelize transaction covers ONLY the Products table.
+//   The orders.stock_status update (Supabase PostgREST HTTP) is a separate
+//   operation — the two cannot share a single ACID transaction because they
+//   use different connection pools.  The stock_status state machine (pending
+//   → processing → done/failed) bridges this architectural gap and makes the
+//   overall operation safe and retryable.
+// ══════════════════════════════════════════════════════════════════════════════
+async function reduceStockForOrder(orderId) {
+  // 1. Fetch order items from Supabase
+  const { data: items, error: itemsErr } = await supabase
     .from('order_items')
-    .select('unit_price, quantity')
+    .select('product_id, product_name, quantity')
     .eq('order_id', orderId);
 
-  if (error) throw new Error(`DB error fetching order items: ${error.message}`);
-  if (!items || items.length === 0) throw new Error(`No items found for order ${orderId}`);
+  if (itemsErr) {
+    return { success: false, error: `Failed to fetch order items: ${itemsErr.message}` };
+  }
+  if (!items || items.length === 0) {
+    return { success: false, error: `No order items found for order ${orderId}` };
+  }
 
-  const totalEGP = items.reduce(
-    (sum, item) => sum + parseFloat(item.unit_price) * parseInt(item.quantity, 10),
-    0
+  console.log(
+    `📦 [reduceStockForOrder] Processing ${items.length} item(s) for order ${orderId}`
   );
 
-  return Math.round(totalEGP * 100);
+  // 2. Validate all quantities before entering the transaction
+  for (const item of items) {
+    const qty = parseInt(item.quantity, 10);
+    if (!Number.isInteger(qty) || qty < 1) {
+      return {
+        success: false,
+        error: `Invalid quantity for product ${item.product_id}: "${item.quantity}"`,
+      };
+    }
+  }
+
+  // 3. Sequelize transaction: atomic conditional decrement for every product
+  const t = await sequelize.transaction();
+  try {
+    for (const item of items) {
+      const qty       = parseInt(item.quantity, 10);
+      const productId = item.product_id;
+      const name      = item.product_name ?? productId;
+
+      // Atomic conditional decrement:
+      //   SET countInStock = countInStock - qty  WHERE countInStock >= qty
+      // affectedCount === 0  →  stock insufficient or product not found
+      // affectedCount === 1  →  success
+      const [affectedCount] = await Product.update(
+        { countInStock: sequelize.literal(`"countInStock" - ${qty}`) },
+        {
+          where: {
+            id:           productId,
+            countInStock: { [Op.gte]: qty },
+          },
+          transaction: t,
+        }
+      );
+
+      if (affectedCount !== 1) {
+        throw new Error(
+          `Insufficient stock for product "${name}" (id=${productId}): ` +
+          `need ${qty} unit(s) but available stock is less than that, ` +
+          `or product does not exist.`
+        );
+      }
+
+      console.log(
+        `✅ [reduceStockForOrder] Product "${name}" (${productId}) − ${qty} unit(s)`
+      );
+    }
+
+    await t.commit();
+    console.log(
+      `✅ [reduceStockForOrder] All ${items.length} product(s) decremented for order ${orderId}`
+    );
+    return { success: true };
+
+  } catch (txErr) {
+    try { await t.rollback(); } catch (rbErr) {
+      console.error(
+        `❌ [reduceStockForOrder] Rollback also failed for order ${orderId}: ${rbErr.message}`
+      );
+    }
+    console.error(
+      `❌ [reduceStockForOrder] Transaction rolled back for order ${orderId}: ${txErr.message}`
+    );
+    return { success: false, error: txErr.message };
+  }
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -190,15 +337,16 @@ async function initiatePayment(req, res) {
       postal_code:  '00000',
     };
 
-    // ── 3. Calculate amount strictly from DB ──────────────────────────────────
+    // ── 3. Read final total directly from the persisted order row ─────────────
+    // Uses orders.total — which already includes tax, shipping, and any
+    // discounts stored at order-creation time.  Never recalculates here.
     let amountCents;
     try {
-      amountCents = await calcAmountCentsFromDB(order_id);
-      console.log(`💰 [paymobController] Order ${order_id} → amountCents=${amountCents}`);
+      amountCents = await calcAmountCentsFromOrder(order_id);
     } catch (calcErr) {
       return res.status(500).json({
         success: false,
-        message: `Payment initialization failed: could not calculate order amount — ${calcErr.message}`,
+        message: `Payment initialization failed: could not read order total — ${calcErr.message}`,
       });
     }
 
@@ -399,7 +547,6 @@ async function handleWebhook(req, res) {
   try {
     hmacValid = verifyPaymobHmac(body, receivedHmac);
   } catch (hmacErr) {
-    // Secret not configured — server misconfiguration, log loudly
     console.error('🚨 [paymobWebhook] HMAC check threw:', hmacErr.message);
     return res.status(200).json({ received: false, message: hmacErr.message });
   }
@@ -419,39 +566,28 @@ async function handleWebhook(req, res) {
   const isPending           = txn?.pending === true;
   const amountCentsReported = parseInt(txn?.amount_cents ?? '0', 10);
   const internalOrderId     = txn?.special_reference
-    ?? txn?.order?.merchant_order_id 
-    ?? txn?.payment_key_claims?.billing_data?.merchant_order_id 
-    ?? txn?.intention?.extras?.merchant_order_id 
-    ?? txn?.extras?.merchant_order_id 
+    ?? txn?.order?.merchant_order_id
+    ?? txn?.payment_key_claims?.billing_data?.merchant_order_id
+    ?? txn?.intention?.extras?.merchant_order_id
+    ?? txn?.extras?.merchant_order_id
     ?? null;
 
-  console.log(`📬 [paymobWebhook] txn=${paymobTransactionId} success=${isSuccess} pending=${isPending} orderId=${internalOrderId}`);
+  console.log(
+    `📬 [paymobWebhook] txn=${paymobTransactionId} success=${isSuccess} ` +
+    `pending=${isPending} orderId=${internalOrderId}`
+  );
 
-  // ── 4. Idempotency guard (by Paymob transaction ID) ─────────────────────────
-  // If we have already processed this exact transaction, skip everything.
-  // This prevents double-emails and double-cart-clears on Paymob retries.
-  if (paymobTransactionId) {
-    const { data: existing } = await supabase
-      .from('orders')
-      .select('id, payment_status')
-      .eq('paymob_transaction_id', paymobTransactionId)
-      .maybeSingle();
-
-    if (existing) {
-      console.log(`ℹ️ [paymobWebhook] Transaction ${paymobTransactionId} already processed — skipping.`);
-      return res.status(200).json({ received: true, message: 'Already processed.' });
-    }
-  }
-
-  // ── 5. Resolve internal order ────────────────────────────────────────────────
+  // ── 4. Resolve internal order ────────────────────────────────────────────────
   if (!internalOrderId) {
     console.error('❌ [paymobWebhook] Cannot resolve internal order ID from webhook payload.');
     return res.status(200).json({ received: true, message: 'Acknowledged (unresolvable order).' });
   }
 
+  // Fetch order with all fields needed for amount verification, idempotency,
+  // and stock-status state machine in one round-trip.
   const { data: order, error: fetchErr } = await supabase
     .from('orders')
-    .select('id, total, payment_status, user_id')
+    .select('id, subtotal, tax, total, payment_status, user_id, stock_status, stock_processing_started_at')
     .eq('id', internalOrderId)
     .maybeSingle();
 
@@ -460,35 +596,33 @@ async function handleWebhook(req, res) {
     return res.status(200).json({ received: true, message: 'Acknowledged (order not found).' });
   }
 
-  // ── 4b. Idempotency guard (by order payment_status) ─────────────────────────
-  // Belt-and-suspenders: if the order is already marked paid (e.g. the txn ID
-  // column was null last time), do NOT re-send emails or re-clear carts.
-  if (order.payment_status === 'paid') {
-    console.log(`ℹ️ [paymobWebhook] Order ${internalOrderId} already marked paid — skipping.`);
-    return res.status(200).json({ received: true, message: 'Already processed.' });
-  }
+  // ── 5. Amount verification ────────────────────────────────────────────────────
+  // Compute expected amount directly from the persisted order row (orders.total)
+  // instead of re-summing order_items.  This includes tax, shipping, and any
+  // other fees already baked into total — never recalculated here.
+  const subtotal            = parseFloat(order.subtotal  ?? 0);
+  const tax                 = parseFloat(order.tax       ?? 0);
+  const finalTotal          = parseFloat(order.total     ?? 0);
+  const expectedAmountCents = Math.round(finalTotal * 100);
 
-  // ── 6. Amount verification ───────────────────────────────────────────────────
-  // Re-calculate from DB — never trust the amount Paymob reports.
-  let expectedAmountCents;
-  try {
-    expectedAmountCents = await calcAmountCentsFromDB(internalOrderId);
-  } catch (calcErr) {
-    console.error(`❌ [paymobWebhook] Could not calculate expected amount: ${calcErr.message}`);
-    await supabase
-      .from('orders')
-      .update({ payment_status: 'failed', updated_at: new Date().toISOString() })
-      .eq('id', internalOrderId);
-    await logActivity(null, 'PAYMENT_FAILED', 'order', internalOrderId, {
-      reason: 'Could not recalculate expected amount from DB',
-      paymob_transaction_id: paymobTransactionId,
-    });
-    return res.status(200).json({ received: true, message: 'Acknowledged (amount calculation error).' });
+  console.log(`💰 [paymobWebhook] Order ${internalOrderId} amount breakdown:`, {
+    orderId:             internalOrderId,
+    subtotal,
+    tax,
+    finalTotal,
+    expectedAmountCents,
+    reportedAmountCents: amountCentsReported,
+  });
+
+  if (finalTotal <= 0) {
+    console.error(`❌ [paymobWebhook] Order ${internalOrderId} has invalid total: ${order.total}`);
+    return res.status(200).json({ received: true, message: 'Acknowledged (invalid order total).' });
   }
 
   if (amountCentsReported !== expectedAmountCents) {
     console.error(
-      `🚨 [paymobWebhook] Amount mismatch! reported=${amountCentsReported} expected=${expectedAmountCents} — FRAUD ALERT`
+      `🚨 [paymobWebhook] Amount mismatch! ` +
+      `reported=${amountCentsReported} expected=${expectedAmountCents} — FRAUD ALERT`
     );
     await supabase
       .from('orders')
@@ -506,50 +640,145 @@ async function handleWebhook(req, res) {
     return res.status(200).json({ received: true, message: 'Acknowledged (amount mismatch).' });
   }
 
-  // ── 7. Determine final status and update order ───────────────────────────────
+  // ── 6. Determine final payment status ────────────────────────────────────────
   // ★ THIS IS THE ONLY PLACE IN THE ENTIRE CODEBASE THAT SETS payment_status='paid'.
   //   handleCallback performs ZERO database writes.
   //   initiatePayment only sets 'initiated'.
-  const finalStatus = (isSuccess && !isPending) ? 'paid' : 'failed';
+  const finalPaymentStatus = (isSuccess && !isPending) ? 'paid' : 'failed';
+  const finalOrderStatus   = finalPaymentStatus === 'paid' ? 'confirmed' : 'cancelled';
 
-  try {
-    const { error: updateErr } = await supabase
+  // ── 7. FAILED payment: atomic idempotent update ──────────────────────────────
+  if (finalPaymentStatus === 'failed') {
+    // Only update if not yet processed.  The .in() guard prevents overwriting
+    // a successfully paid order with a concurrent or delayed failed webhook.
+    await supabase
       .from('orders')
       .update({
-        payment_status:        finalStatus,
+        payment_status:        'failed',
         paymob_transaction_id: paymobTransactionId || null,
-        // Confirm the order on successful payment, or mark as cancelled if failed
-        status:                finalStatus === 'paid' ? 'confirmed' : 'cancelled',
+        status:                'cancelled',
         updated_at:            new Date().toISOString(),
       })
-      .eq('id', internalOrderId);
+      .eq('id', internalOrderId)
+      .in('payment_status', ['pending', 'initiated']);
 
-    if (updateErr) {
-      console.warn(`⚠️ [paymobWebhook] Status update failed: ${updateErr.message} — trying fallback (status=pending)`);
-      await supabase
-        .from('orders')
-        .update({
-          payment_status:        finalStatus,
-          paymob_transaction_id: paymobTransactionId || null,
-          status:                'pending',
-          updated_at:            new Date().toISOString(),
-        })
-        .eq('id', internalOrderId);
-    }
-  } catch (updExc) {
-    console.error(`❌ [paymobWebhook] DB update exception for order ${internalOrderId}: ${updExc.message}`);
+    await logActivity(order.user_id, 'PAYMENT_FAILED', 'order', internalOrderId, {
+      paymob_transaction_id: paymobTransactionId,
+      amount_cents:          amountCentsReported,
+      success:               isSuccess,
+      pending:               isPending,
+    });
+
+    console.log(`❌ [paymobWebhook] Order ${internalOrderId} → payment failed.`);
+    return res.status(200).json({ received: true, message: 'Payment failed.' });
   }
 
-  // ── 8. On successful payment: clear cart & send confirmation email ────────
-  if (finalStatus === 'paid') {
-    // 8a. Clear user's server-side cart
+  // ── 8. SUCCESSFUL payment: two-phase atomic state machine ────────────────────
+  //
+  // ┌─────────────────────────────────────────────────────────────────────────┐
+  // │  PHASE A — Claim payment (first successful webhook only)                │
+  // │  Atomic conditional UPDATE:                                             │
+  // │    payment_status IN ('pending','initiated') → 'paid'                  │
+  // │    stock_status simultaneously set to 'pending'                         │
+  // │  If 1 row → first claim: do cart-clear + email, then proceed to stock. │
+  // │  If 0 rows → already claimed: check current stock_status for retry.    │
+  // ├─────────────────────────────────────────────────────────────────────────┤
+  // │  PHASE B-1 — Claim stock-processing lease (normal path)                │
+  // │  Atomic conditional UPDATE:                                             │
+  // │    stock_status IN ('pending','failed') → 'processing'                  │
+  // │  If 1 row → we own the lease; proceed to stock.                        │
+  // │  If 0 rows → check for stale lease (crash/timeout recovery, B-2).     │
+  // ├─────────────────────────────────────────────────────────────────────────┤
+  // │  PHASE B-2 — Reclaim stale processing lease (crash recovery)           │
+  // │  Atomic conditional UPDATE:                                             │
+  // │    stock_status = 'processing'                                          │
+  // │    AND stock_processing_started_at < now() − 5 min                     │
+  // │  Lease timeout covers Vercel max serverless function duration.          │
+  // │  If 1 row → stale lease reclaimed; proceed to stock.                   │
+  // │  If 0 rows → fresh active lease held by another instance; skip.        │
+  // ├─────────────────────────────────────────────────────────────────────────┤
+  // │  PHASE C — Sequelize transaction for stock decrement                   │
+  // │  All products decremented atomically (all-or-nothing).                  │
+  // │  WHERE countInStock >= qty prevents negative stock.                     │
+  // ├─────────────────────────────────────────────────────────────────────────┤
+  // │  PHASE D — Finalize stock_status                                        │
+  // │  'done' on success (terminal — never re-processed).                     │
+  // │  'failed' on rollback (retryable by next duplicate webhook).            │
+  // └─────────────────────────────────────────────────────────────────────────┘
+
+  // ── Phase A: Claim payment ────────────────────────────────────────────────
+  let isFirstPaymentClaim = false;
+  try {
+    const { data: paymentClaimed, error: claimErr } = await supabase
+      .from('orders')
+      .update({
+        payment_status:        'paid',
+        paymob_transaction_id: paymobTransactionId || null,
+        status:                finalOrderStatus,
+        stock_status:          'pending',   // signals stock work is needed
+        updated_at:            new Date().toISOString(),
+      })
+      .eq('id', internalOrderId)
+      .in('payment_status', ['pending', 'initiated'])
+      .select('id');
+
+    if (claimErr) {
+      console.error(
+        `❌ [paymobWebhook] Phase A DB error for order ${internalOrderId}: ${claimErr.message}`
+      );
+    } else {
+      isFirstPaymentClaim = Array.isArray(paymentClaimed) && paymentClaimed.length > 0;
+    }
+  } catch (phaseAErr) {
+    console.error(
+      `❌ [paymobWebhook] Phase A exception for order ${internalOrderId}: ${phaseAErr.message}`
+    );
+  }
+
+  if (!isFirstPaymentClaim) {
+    // Payment was already claimed. Re-fetch to determine current stock state.
+    const { data: freshOrder } = await supabase
+      .from('orders')
+      .select('payment_status, stock_status, stock_processing_started_at')
+      .eq('id', internalOrderId)
+      .maybeSingle();
+
+    if (!freshOrder || freshOrder.payment_status !== 'paid') {
+      // Order ended as 'failed', or something unexpected — skip everything.
+      console.log(
+        `ℹ️ [paymobWebhook] Order ${internalOrderId} ` +
+        `payment_status=${freshOrder?.payment_status ?? 'unknown'} — skipping stock.`
+      );
+      return res.status(200).json({ received: true, message: 'Already processed.' });
+    }
+
+    if (freshOrder.stock_status === 'done') {
+      console.log(
+        `ℹ️ [paymobWebhook] Order ${internalOrderId} stock_status=done — nothing to do.`
+      );
+      return res.status(200).json({ received: true, message: 'Already fully processed.' });
+    }
+
+    // stock_status is pending / failed / processing(possibly stale) — fall through to Phase B.
+    console.log(
+      `🔄 [paymobWebhook] Order ${internalOrderId} stock_status=${
+        freshOrder.stock_status ?? 'null'
+      } — attempting stock processing.`
+    );
+  } else {
+    // ── First payment claim: clear cart + send confirmation email ─────────
+    // These ONLY run on the very first successful payment claim.
+    // Stock retries (Phase A returns 0 rows) must NOT re-send emails or
+    // re-clear the cart.
     try {
       const { error: cartErr } = await supabase
         .from('cart_items')
         .delete()
         .eq('user_id', order.user_id);
       if (cartErr) {
-        console.warn(`⚠️ [paymobWebhook] Cart clear failed for user ${order.user_id}: ${cartErr.message}`);
+        console.warn(
+          `⚠️ [paymobWebhook] Cart clear failed for user ${order.user_id}: ${cartErr.message}`
+        );
       } else {
         console.log(`🛒 [paymobWebhook] Cart cleared for user ${order.user_id}`);
       }
@@ -557,7 +786,6 @@ async function handleWebhook(req, res) {
       console.warn('⚠️ [paymobWebhook] Cart clear exception:', cartExc.message);
     }
 
-    // 8b. Fetch full order and user data to send confirmation email
     try {
       const { data: fullOrder } = await supabase
         .from('orders')
@@ -573,32 +801,179 @@ async function handleWebhook(req, res) {
 
       if (userRow?.email && fullOrder) {
         sendOrderConfirmationEmail(userRow.email, fullOrder, userRow.firstName || 'Customer')
-          .then(() => console.log(`📧 [paymobWebhook] Confirmation email sent to ${userRow.email}`))
-          .catch(e => console.warn('⚠️ [paymobWebhook] Order email skipped:', e.message));
+          .then(() =>
+            console.log(`📧 [paymobWebhook] Confirmation email sent to ${userRow.email}`)
+          )
+          .catch((e) =>
+            console.warn('⚠️ [paymobWebhook] Order email skipped:', e.message)
+          );
       }
     } catch (emailErr) {
       console.warn('⚠️ [paymobWebhook] Could not send confirmation email:', emailErr.message);
     }
   }
 
-  // ── 9. Log activity ───────────────────────────────────────────────────────
-  const logAction = finalStatus === 'paid' ? 'PAYMENT_CONFIRMED' : 'PAYMENT_FAILED';
-  await logActivity(order.user_id, logAction, 'order', internalOrderId, {
-    paymob_transaction_id: paymobTransactionId,
-    amount_cents:          amountCentsReported,
-    success:               isSuccess,
-    pending:               isPending,
+  // ── Phase B-1: Claim stock-processing lease (normal path) ─────────────────
+  // Transitions stock_status: pending | failed → processing.
+  // Two concurrent webhooks race on this UPDATE; only one succeeds (Postgres
+  // row-level lock on the UPDATE).  The loser gets 0 rows and falls through
+  // to B-2, where the fresh lease timestamp will prevent reclaim.
+  const STOCK_LEASE_TIMEOUT_MS = 5 * 60 * 1000;  // 5 minutes
+  const leaseAcquiredAt        = new Date().toISOString();
+  let   stockSlotClaimed       = false;
+
+  try {
+    const { data: normalClaim, error: b1Err } = await supabase
+      .from('orders')
+      .update({
+        stock_status:                'processing',
+        stock_processing_started_at: leaseAcquiredAt,
+        updated_at:                  new Date().toISOString(),
+      })
+      .eq('id', internalOrderId)
+      .in('stock_status', ['pending', 'failed'])
+      .select('id');
+
+    if (b1Err) {
+      console.error(
+        `❌ [paymobWebhook] Phase B-1 DB error for order ${internalOrderId}: ${b1Err.message}`
+      );
+    } else if (Array.isArray(normalClaim) && normalClaim.length > 0) {
+      stockSlotClaimed = true;
+      console.log(
+        `⚙️ [paymobWebhook] Phase B-1: stock lease acquired for order ${internalOrderId}`
+      );
+    }
+  } catch (b1Exc) {
+    console.error(
+      `❌ [paymobWebhook] Phase B-1 exception for order ${internalOrderId}: ${b1Exc.message}`
+    );
+  }
+
+  // ── Phase B-2: Reclaim stale processing lease (crash/timeout recovery) ────
+  // Runs only when B-1 returned 0 rows (stock_status was not pending/failed).
+  // If the current stock_status is 'processing' but the lease is older than
+  // STOCK_LEASE_TIMEOUT_MS, the previous processing instance crashed or was
+  // killed by the Vercel runtime.  We reclaim the slot.
+  if (!stockSlotClaimed) {
+    try {
+      const staleThresholdISO = new Date(Date.now() - STOCK_LEASE_TIMEOUT_MS).toISOString();
+
+      const { data: staleClaim, error: b2Err } = await supabase
+        .from('orders')
+        .update({
+          stock_status:                'processing',
+          stock_processing_started_at: leaseAcquiredAt,
+          updated_at:                  new Date().toISOString(),
+        })
+        .eq('id', internalOrderId)
+        .eq('stock_status', 'processing')
+        .lt('stock_processing_started_at', staleThresholdISO)
+        .select('id');
+
+      if (b2Err) {
+        console.error(
+          `❌ [paymobWebhook] Phase B-2 DB error for order ${internalOrderId}: ${b2Err.message}`
+        );
+      } else if (Array.isArray(staleClaim) && staleClaim.length > 0) {
+        stockSlotClaimed = true;
+        console.warn(
+          `🔄 [paymobWebhook] Phase B-2: reclaimed stale processing lease ` +
+          `for order ${internalOrderId} (previous instance likely crashed/timed-out)`
+        );
+      }
+    } catch (b2Exc) {
+      console.error(
+        `❌ [paymobWebhook] Phase B-2 exception for order ${internalOrderId}: ${b2Exc.message}`
+      );
+    }
+  }
+
+  if (!stockSlotClaimed) {
+    // stock_status is 'done' (terminal) or another instance holds a fresh lease.
+    // Either way, nothing for this invocation to do.
+    console.log(
+      `ℹ️ [paymobWebhook] Order ${internalOrderId} — stock slot not available ` +
+      `(already done, or active fresh lease). Skipping.`
+    );
+    return res.status(200).json({
+      received: true,
+      message:  'Payment confirmed. Stock already processed or being processed.',
+    });
+  }
+
+  // ── Phase C: Reduce stock via Sequelize transaction ───────────────────────
+  // reduceStockForOrder fetches order_items from Supabase then runs a
+  // Sequelize transaction that atomically decrements countInStock for every
+  // product.  Any insufficient-stock condition rolls back ALL decrements.
+  const stockResult = await reduceStockForOrder(internalOrderId);
+
+  // ── Phase D: Finalize stock_status ────────────────────────────────────────
+  // 'done'   → terminal, never re-processed
+  // 'failed' → retryable by next duplicate webhook from Paymob
+  const finalStockStatus = stockResult.success ? 'done' : 'failed';
+  try {
+    await supabase
+      .from('orders')
+      .update({
+        stock_status:                finalStockStatus,
+        stock_processing_started_at: null,   // release the lease
+        updated_at:                  new Date().toISOString(),
+      })
+      .eq('id', internalOrderId);
+
+    console.log(
+      `📦 [paymobWebhook] Order ${internalOrderId} → stock_status='${finalStockStatus}'.`
+    );
+  } catch (finalizeErr) {
+    // Phase D failed: stock_status stays 'processing' with the timestamp.
+    // The stale-lease recovery in Phase B-2 will allow a future webhook to
+    // reclaim after STOCK_LEASE_TIMEOUT_MS.
+    console.error(
+      `❌ [paymobWebhook] Phase D finalize failed for order ${internalOrderId}: ` +
+      `${finalizeErr.message} — stock_status remains 'processing'; ` +
+      `stale-lease recovery will reclaim after ${STOCK_LEASE_TIMEOUT_MS / 60000} min.`
+    );
+  }
+
+  if (!stockResult.success) {
+    console.error(
+      `❌ [paymobWebhook] Stock reduction failed for order ${internalOrderId}: ` +
+      `${stockResult.error}\n` +
+      `   stock_status=failed — next duplicate Paymob webhook will retry.`
+    );
+  }
+
+  // ── 9. Log activity ────────────────────────────────────────────────────────
+  await logActivity(order.user_id, 'PAYMENT_CONFIRMED', 'order', internalOrderId, {
+    paymob_transaction_id:  paymobTransactionId,
+    amount_cents:           amountCentsReported,
+    expected_amount_cents:  expectedAmountCents,
+    is_first_payment_claim: isFirstPaymentClaim,
+    stock_result:           finalStockStatus,
+    stock_error:            stockResult.success ? undefined : stockResult.error,
   });
 
-  console.log(`✅ [paymobWebhook] Order ${internalOrderId} → payment_status='${finalStatus}'.`);
-  return res.status(200).json({ received: true, message: `Payment ${finalStatus}.` });
+  console.log(
+    `✅ [paymobWebhook] Order ${internalOrderId} → ` +
+    `payment_status='paid' stock_status='${finalStockStatus}'.`
+  );
+  return res.status(200).json({
+    received: true,
+    message:  `Payment confirmed. Stock ${finalStockStatus}.`,
+  });
 
   } catch (outerErr) {
     // Safety net: any uncaught async error must NOT bubble up as a 500.
     // Paymob retries on non-200 responses — a 500 would cause an infinite storm.
-    // Log the full stack for manual investigation and acknowledge the request.
-    console.error('🚨 [paymobWebhook] Unhandled exception in webhook handler:', outerErr?.message, outerErr?.stack);
-    return res.status(200).json({ received: false, message: 'Internal error — logged for investigation.' });
+    console.error(
+      '🚨 [paymobWebhook] Unhandled exception in webhook handler:',
+      outerErr?.message, outerErr?.stack
+    );
+    return res.status(200).json({
+      received: false,
+      message: 'Internal error — logged for investigation.',
+    });
   }
 }
 
