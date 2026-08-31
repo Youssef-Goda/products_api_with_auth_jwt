@@ -251,35 +251,158 @@ router.get('/', authenticateToken, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GET /api/orders/all  — Admin: list all orders (Admin / Super-Admin only)
+// GET /api/orders/all  — Admin: list all orders (paginated + filtered)
+// Query params:
+//   page, limit          — pagination (default 1, 20)
+//   search               — full-text across name / email / phone / orderId / address
+//   status               — exact status filter
+//   governorate          — exact governorate filter
+//   city                 — exact city filter
 // ══════════════════════════════════════════════════════════════════════════════
 router.get('/all', authenticateToken, checkRole(['admin', 'super_admin', 'owner', 'moderator']), async (req, res) => {
   try {
-    const page = parseInt(req.query.page) || 1;
-    const limit = parseInt(req.query.limit) || 20;
-    const from = (page - 1) * limit;
-    const to = from + limit - 1;
+    const page        = Math.max(1, parseInt(req.query.page)  || 1);
+    const limit       = Math.max(1, parseInt(req.query.limit) || 20);
+    const from        = (page - 1) * limit;
+    const to          = from + limit - 1;
+    const search      = (req.query.search      || '').trim();
+    const statusFilter= (req.query.status      || '').trim().toLowerCase();
+    const govFilter   = (req.query.governorate || '').trim();
+    const cityFilter  = (req.query.city        || '').trim();
 
-    const { data, error, count } = await supabase
+    // ── Base select (always join users + shipping_addresses + items) ──────────
+    let query = supabase
       .from('orders')
-      .select('*, users(firstName, lastName, email, phoneNumber), order_items(*), shipping_addresses(*)', { count: 'exact' })
-      .order('created_at', { ascending: false })
-      .range(from, to);
+      .select(
+        '*, users(firstName, lastName, email, phoneNumber), order_items(*), shipping_addresses(*)',
+        { count: 'exact' }
+      )
+      .order('created_at', { ascending: false });
 
-    if (error) throw error;
-    
-    return res.json({ 
-      success: true, 
-      data, 
-      total_count: count,
+    // ── Status filter (server-side) ───────────────────────────────────────────
+    if (statusFilter && statusFilter !== 'all') {
+      query = query.eq('status', statusFilter);
+    }
+
+    // ── Governorate / City filter via shipping_addresses relation ─────────────
+    // PostgREST supports nested column filters with dot notation
+    if (govFilter)  query = query.eq('shipping_addresses.governorate', govFilter);
+    if (cityFilter) query = query.eq('shipping_addresses.city',        cityFilter);
+
+    // ── Full-text search & Filters ─────────────────────────────────────────────
+    // Supabase PostgREST limits queries to 1000 rows by default.
+    // To search "ALL database records" in memory across joined tables, we must
+    // fetch everything if a search/filter is applied, bypassing the 1000 limit.
+    let allRows = [];
+    let filteredCount = 0;
+
+    const hasFilters = search || (statusFilter && statusFilter !== 'all') || govFilter || cityFilter;
+
+    if (!hasFilters) {
+      // 🚀 Fast path: No search/filters, use DB-level pagination directly
+      const { data, count, error } = await query
+        .range(from, to);
+      if (error) throw error;
+      allRows = data || [];
+      filteredCount = count || 0;
+    } else {
+      // 🔍 Slow path: Fetch ALL rows (looping past 1000 limit) to search across them
+      let offset = 0;
+      const CHUNK_SIZE = 1000;
+      let keepFetching = true;
+      let rawRows = [];
+
+      while (keepFetching) {
+        const { data, error } = await supabase
+          .from('orders')
+          .select('*, users(firstName, lastName, email, phoneNumber), order_items(*), shipping_addresses(*)')
+          .order('created_at', { ascending: false })
+          .range(offset, offset + CHUNK_SIZE - 1);
+
+        if (error) throw error;
+        if (data && data.length > 0) {
+          rawRows.push(...data);
+          offset += CHUNK_SIZE;
+        }
+        if (!data || data.length < CHUNK_SIZE) {
+          keepFetching = false;
+        }
+      }
+
+      // Apply status / geo filters in JS
+      if (statusFilter && statusFilter !== 'all') {
+        rawRows = rawRows.filter(r => (r.status || '').toLowerCase() === statusFilter);
+      }
+      if (govFilter) {
+        rawRows = rawRows.filter(r => r.shipping_addresses?.governorate === govFilter);
+      }
+      if (cityFilter) {
+        rawRows = rawRows.filter(r => r.shipping_addresses?.city === cityFilter);
+      }
+
+      // Apply search across Order ID, shortId, Customer Name, Email, Phone Number, City, and Governorate.
+      if (search) {
+        const q = search.toLowerCase();
+        rawRows = rawRows.filter(r => {
+          const first  = (r.users?.firstName || '').toLowerCase();
+          const last   = (r.users?.lastName  || '').toLowerCase();
+          const email  = (r.users?.email     || '').toLowerCase();
+          const phone  = (r.users?.phoneNumber || '').toLowerCase();
+          const ordId  = (r.id || '').toLowerCase();
+          const shortId = ordId.length >= 8 ? ordId.slice(-8) : ordId;
+          const city   = (r.shipping_addresses?.city || '').toLowerCase();
+          const gov    = (r.shipping_addresses?.governorate || '').toLowerCase();
+
+          return (
+            ordId.includes(q) ||
+            shortId.includes(q) ||
+            `${first} ${last}`.includes(q) ||
+            email.includes(q) ||
+            phone.includes(q) ||
+            city.includes(q) ||
+            gov.includes(q)
+          );
+        });
+      }
+
+      filteredCount = rawRows.length;
+      allRows = rawRows.slice(from, from + limit);
+    }
+
+    const pageRows = allRows;
+
+    // ── Global stats (ignoring all filters) for the KPI cards ────────────────
+    const { count: totalGlobal } = await supabase
+      .from('orders')
+      .select('*', { count: 'exact', head: true });
+
+    const { data: statusCounts } = await supabase
+      .from('orders')
+      .select('status');
+
+    const pendingCount   = (statusCounts || []).filter(r => r.status === 'pending').length;
+    const deliveredCount = (statusCounts || []).filter(r => r.status === 'delivered').length;
+    const cancelledCount = (statusCounts || []).filter(r => r.status === 'cancelled').length;
+
+    return res.json({
+      success:      true,
+      data:         pageRows,
+      total_count:  filteredCount,
       page,
-      limit
+      limit,
+      global_stats: {
+        total:     totalGlobal || 0,
+        pending:   pendingCount,
+        delivered: deliveredCount,
+        cancelled: cancelledCount,
+      },
     });
   } catch (err) {
     console.error('❌ Fetch All Orders Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });
   }
 });
+
 
 // ══════════════════════════════════════════════════════════════════════════════
 // GET /api/orders/:id  — Get a single order by ID
