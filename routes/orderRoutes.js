@@ -253,15 +253,28 @@ router.get('/', authenticateToken, async (req, res) => {
 // ══════════════════════════════════════════════════════════════════════════════
 // GET /api/orders/all  — Admin: list all orders (Admin / Super-Admin only)
 // ══════════════════════════════════════════════════════════════════════════════
-router.get('/all', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
+router.get('/all', authenticateToken, checkRole(['admin', 'super_admin', 'owner', 'moderator']), async (req, res) => {
   try {
-    const { data, error } = await supabase
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 20;
+    const from = (page - 1) * limit;
+    const to = from + limit - 1;
+
+    const { data, error, count } = await supabase
       .from('orders')
-      .select('*, users(firstName, lastName, email)')
-      .order('created_at', { ascending: false });
+      .select('*, users(firstName, lastName, email, phoneNumber), order_items(*), shipping_addresses(*)', { count: 'exact' })
+      .order('created_at', { ascending: false })
+      .range(from, to);
 
     if (error) throw error;
-    return res.json({ success: true, data });
+    
+    return res.json({ 
+      success: true, 
+      data, 
+      total_count: count,
+      page,
+      limit
+    });
   } catch (err) {
     console.error('❌ Fetch All Orders Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });
@@ -339,7 +352,7 @@ router.get('/:id/payment-status', authenticateToken, async (req, res) => {
 // PATCH /api/orders/:id/status  — Update order status (Admin / Super-Admin only)
 // Body: { status: string }
 // ══════════════════════════════════════════════════════════════════════════════
-router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin']), async (req, res) => {
+router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin', 'owner', 'moderator']), async (req, res) => {
   const { status } = req.body;
 
   if (!status || !VALID_STATUSES.includes(status)) {
