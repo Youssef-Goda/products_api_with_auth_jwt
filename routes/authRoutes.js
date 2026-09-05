@@ -5,6 +5,7 @@ const User = require('../models/User');
 const PendingUser = require('../models/PendingUser');
 const { generateAccessToken, generateRefreshToken } = require('../utils/generateTokens');
 const { sendOTP } = require('../utils/otpHelper');
+const { sendOTP, sendNewLoginEmail } = require('../utils/otpHelper');
 const router = express.Router();
 
 // 1. ========================= Register =========================
@@ -117,6 +118,13 @@ router.post('/login', async (req, res) => {
                 phoneNumber: user.phoneNumber, birthDate: user.birthDate, gender: user.gender, profilePicture: user.profilePicture
             }
         });
+
+        // Trigger New Login Email Notification asynchronously (do not await)
+        if (req.body.deviceInfo) {
+            sendNewLoginEmail(user.email, req.body.deviceInfo, user.firstName);
+        }
+
+
     } catch (err) {
         res.status(500).json({ success: false, message: err.message });
     }

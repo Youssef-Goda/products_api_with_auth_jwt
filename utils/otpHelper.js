@@ -1,88 +1,3 @@
-// const nodemailer = require('nodemailer');
-// require('dotenv').config();
-
-// const transporter = nodemailer.createTransport({
-//     host: 'smtp-relay.brevo.com',
-//     port: 587,
-//     secure: false,
-//     auth: {
-//         user: process.env.EMAIL_USER,
-//         pass: process.env.EMAIL_PASS
-//     },
-//     tls: { rejectUnauthorized: false }
-// });
-
-// const sendOTP = async (toEmail, otp, type = 'verification') => {
-//     // هنا بنحدد الكلام اللي هيتكتب حسب النوع
-//     const subjectText = type === 'reset' ? 'Reset Your Password' : 'Confirm Your Email';
-//     const titleText = type === 'reset' ? 'Password Reset Request' : 'Confirm Your Email';
-//     const messageText = type === 'reset' ? 'We received a request to reset your password. Use the code below:' : 'Welcome to Dealio! Use the code below to verify your account.';
-
-//     const mailOptions = {
-//         from: '"Dealio" <dealio.eg7@gmail.com>',
-//         to: toEmail,
-//         subject: `${otp} - ${subjectText}`, // العنوان اللي بيظهر بره
-//         html: `
-//         <!DOCTYPE html>
-//         <html>
-//         <head>
-//             <meta charset="utf-8">
-//             <style>
-//                 .main-container { font-family: 'Segoe UI', Arial, sans-serif; background-color: #f4f4f4; padding: 40px 10px; }
-//                 .content-card { max-width: 480px; margin: 0 auto; background: #ffffff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.1); border-top: 6px solid #fce108; }
-//                 .header { background-color: #000000; padding: 25px; text-align: center; }
-//                 .body-content { padding: 40px 30px; text-align: center; }
-//                 .otp-box { background-color: #000000; border-radius: 12px; padding: 20px; font-size: 35px; font-weight: bold; letter-spacing: 10px; color: #fce108; margin: 25px 0; border: 1px solid #333; }
-//                 .footer { padding: 20px; text-align: center; font-size: 12px; color: #999; }
-//             </style>
-//         </head>
-//         <body>
-//             <div class="main-container">
-//                 <div class="content-card">
-//                     <div class="header">
-//                         <table align="center" border="0" cellpadding="0" cellspacing="0">
-//                             <tr>
-//                                 <td style="padding: 0; vertical-align: middle;">
-//                                     <img src="https://i.ibb.co/pBYpbyXd/logo.png" alt="D" width="45" style="display: block; border: 0; margin-right: -5px;" />
-//                                 </td>
-//                                 <td style="padding: 0; vertical-align: middle;">
-//                                     <span style="color: #ffffff; font-size: 38px; font-weight: bold; font-family: sans-serif;">ealio</span>
-//                                 </td>
-//                             </tr>
-//                         </table>
-//                     </div>
-                    
-//                     <div class="body-content">
-//                         <h2 style="color: #000; margin: 0; font-size: 22px;">${titleText}</h2>
-//                         <p style="color: #555; font-size: 15px; line-height: 1.6; margin-top: 10px;">${messageText}</p>
-                        
-//                         <div class="otp-box">${otp}</div>
-                        
-//                         <p style="color: #999; font-size: 12px;">This code expires in 10 minutes.</p>
-//                     </div>
-                    
-//                     <div class="footer">
-//                         &copy; ${new Date().getFullYear()} Dealio Team.
-//                     </div>
-//                 </div>
-//             </div>
-//         </body>
-//         </html>
-//         `
-//     };
-
-//     try {
-//         await transporter.sendMail(mailOptions);
-//         console.log(`✅ Email Sent (${type}): Luxury Theme Ready!`);
-//     } catch (error) {
-//         console.error('❌ Email Error:', error.message);
-//         throw error;
-//     }
-// };
-
-// module.exports = { sendOTP };
-
-
 const nodemailer = require('nodemailer');
 require('dotenv').config();
 
@@ -286,3 +201,74 @@ const sendOrderConfirmationEmail = async (toEmail, order, firstName = 'Customer'
 };
 
 module.exports = { sendOTP, sendOrderConfirmationEmail };
+// ═════════════════════════════════════════════════════════════════════════════
+// New Login Security Email
+// ═════════════════════════════════════════════════════════════════════════════
+const sendNewLoginEmail = async (toEmail, deviceInfo, firstName = 'User') => {
+    // Sanitize device info to prevent HTML injection
+    const escapeHtml = (unsafe) => {
+        return (unsafe || '').toString()
+             .replace(/&/g, "&amp;")
+             .replace(/</g, "&lt;")
+             .replace(/>/g, "&gt;")
+             .replace(/"/g, "&quot;")
+             .replace(/'/g, "&#039;");
+    };
+    
+    const safeDeviceInfo = escapeHtml(deviceInfo || 'Unknown Device');
+    const timeNow = new Date().toLocaleString('en-EG', { dateStyle: 'long', timeStyle: 'short' });
+
+    const mailOptions = {
+        from: '"Dealio Security" <dealio.eg7@gmail.com>',
+        to: toEmail,
+        subject: 'New Login to your Dealio account',
+        html: `<!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="utf-8">
+            <style>
+                body { margin: 0; padding: 0; background: #f4f4f4; font-family: 'Segoe UI', Arial, sans-serif; }
+                .wrap { padding: 40px 10px; }
+                .card { max-width: 500px; margin: 0 auto; background: #fff; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,.1); border-top: 6px solid #fce108; }
+                .hdr { background: #000; padding: 22px; text-align: center; }
+                .bdy { padding: 32px 28px; }
+                .badge { display: inline-block; background: #ffe6e6; color: #d32f2f; font-weight: bold; font-size: 12px; padding: 6px 14px; border-radius: 20px; margin-bottom: 16px; }
+                h2 { margin: 0 0 12px; font-size: 22px; color: #111; }
+                p { color: #555; font-size: 15px; line-height: 1.6; margin: 0 0 20px; }
+                .box { background: #f9f9f9; border-left: 4px solid #fce108; padding: 16px; margin-bottom: 24px; font-size: 14px; color: #333; }
+                .ftr { padding: 18px; text-align: center; font-size: 12px; color: #bbb; }
+            </style>
+        </head>
+        <body>
+            <div class="wrap">
+                <div class="card">
+                    <div class="hdr"><span style="color:#fce108;font-size:32px;font-weight:bold;letter-spacing:-1px;">Dealio</span></div>
+                    <div class="bdy">
+                        <div class="badge">Security Alert</div>
+                        <h2>New Login Detected</h2>
+                        <p>Hi ${escapeHtml(firstName)},</p>
+                        <p>We noticed a new login to your Dealio account. If this was you, you don't need to do anything. If you don't recognize this activity, please change your password immediately.</p>
+                        
+                        <div class="box">
+                            <strong>Login Details:</strong><br><br>
+                            📱 <strong>Platform/Device:</strong> ${safeDeviceInfo}<br>
+                            🕒 <strong>Time:</strong> ${timeNow}
+                        </div>
+                    </div>
+                    <div class="ftr">&copy; ${new Date().getFullYear()} Dealio Security.</div>
+                </div>
+            </div>
+        </body>
+        </html>`,
+    };
+
+    try {
+        await transporter.sendMail(mailOptions);
+        console.log(`✅ Login alert email sent to ${toEmail}`);
+    } catch (err) {
+        // We log safely and DO NOT THROW, preventing login failure.
+        console.error('❌ Login alert email error:', err.message);
+    }
+};
+
+module.exports = { sendOTP, sendOrderConfirmationEmail, sendNewLoginEmail };
