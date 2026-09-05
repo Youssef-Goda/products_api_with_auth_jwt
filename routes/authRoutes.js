@@ -4,7 +4,6 @@ const sequelize = require('../config/database');
 const User = require('../models/User');
 const PendingUser = require('../models/PendingUser');
 const { generateAccessToken, generateRefreshToken } = require('../utils/generateTokens');
-const { sendOTP } = require('../utils/otpHelper');
 const { sendOTP, sendNewLoginEmail } = require('../utils/otpHelper');
 const router = express.Router();
 
