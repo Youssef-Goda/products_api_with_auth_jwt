@@ -26,6 +26,7 @@ const { checkRole } = require('../middlewares/checkRole');
 const { notifyOrderStatusChanged } = require('../services/orderNotificationService');
 const { createClient } = require('@supabase/supabase-js');
 const { logActivity } = require('../services/activityLogger');
+const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
 
 // ── Supabase admin client (bypass RLS for server-side ops) ──────────────────
 const supabase = createClient(
@@ -218,8 +219,33 @@ router.post('/', authenticateToken, async (req, res) => {
 
     if (fetchErr) throw fetchErr;
 
-    // Note: Confirmation email is NOT sent here.
-    // For Paymob payments, confirmation email is triggered ONLY by the Webhook on successful payment.
+    // For COD orders, send order confirmation email immediately.
+    // Paymob orders are handled by the webhook in paymobController.js (avoids duplicates).
+    if (payment_method === 'cod') {
+      try {
+        const { data: userRow } = await supabase
+          .from('users')
+          .select('email, firstName')
+          .eq('id', userId)
+          .maybeSingle();
+
+        if (userRow?.email) {
+          const emailSent = await sendOrderConfirmationEmail(
+            userRow.email,
+            fullOrder,
+            userRow.firstName || 'Customer',
+          );
+          if (emailSent) {
+            console.log(`✅ [Orders] Order confirmation email sent for COD order ${orderId}`);
+          } else {
+            console.warn(`⚠️ [Orders] Order confirmation email failed for COD order ${orderId} (non-fatal)`);
+          }
+        }
+      } catch (emailErr) {
+        // Should not reach here — sendOrderConfirmationEmail never throws.
+        console.error(`⚠️ [Orders] Unexpected email error for order ${orderId}:`, emailErr.message);
+      }
+    }
 
     return res.status(201).json({ success: true, data: fullOrder });
   } catch (err) {

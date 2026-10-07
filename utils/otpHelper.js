@@ -194,13 +194,14 @@ const sendOrderConfirmationEmail = async (toEmail, order, firstName = 'Customer'
     try {
         await transporter.sendMail(mailOptions);
         console.log(`✅ Order confirmation email sent to ${toEmail}`);
+        return true;
     } catch (err) {
         console.error('❌ Order email error:', err.message);
         // Non-fatal — order is already placed
+        return false;
     }
 };
 
-module.exports = { sendOTP, sendOrderConfirmationEmail };
 // ═════════════════════════════════════════════════════════════════════════════
 // New Login Security Email
 // ═════════════════════════════════════════════════════════════════════════════
