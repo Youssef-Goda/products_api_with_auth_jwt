@@ -1,4 +1,5 @@
 const Category = require('../models/Category');
+const Product = require('../models/Product');
 const { Op } = require('sequelize');
 const { logActivity } = require('../services/activityLogger');
 
@@ -58,14 +59,25 @@ const getCategoryById = async (req, res) => {
 // ── POST /api/categories ── Create category (Admin only)
 const createCategory = async (req, res) => {
     try {
-        const { name, iconUrl, parentId } = req.body;
+        // Accept imageUrl as an alias for iconUrl (frontend may send either)
+        const { name, iconUrl, imageUrl, parentId } = req.body;
         if (!name) return res.status(400).json({ success: false, message: 'Name is required' });
+
+        const finalIconUrl = iconUrl || imageUrl || null;
+
+        // Enforce name uniqueness (case-insensitive)
+        const nameExists = await Category.findOne({
+            where: { name: name.trim() },
+        });
+        if (nameExists) {
+            return res.status(400).json({ success: false, message: 'A category with this name already exists' });
+        }
 
         let slug = generateSlug(name);
 
-        // Ensure slug uniqueness by appending a suffix if needed
-        const existing = await Category.findOne({ where: { slug } });
-        if (existing) slug = `${slug}-${Date.now()}`;
+        // Ensure slug uniqueness by appending a timestamp suffix if needed
+        const existingSlug = await Category.findOne({ where: { slug } });
+        if (existingSlug) slug = `${slug}-${Date.now()}`;
 
         // Validate parentId if provided
         if (parentId) {
@@ -74,9 +86,9 @@ const createCategory = async (req, res) => {
         }
 
         const category = await Category.create({
-            name,
+            name: name.trim(),
             slug,
-            iconUrl: iconUrl || null,
+            iconUrl: finalIconUrl,
             parentId: parentId || null
         });
 
@@ -93,7 +105,7 @@ const createCategory = async (req, res) => {
 // ── PUT /api/categories/:id ── Update category (Admin only)
 const updateCategory = async (req, res) => {
     try {
-        const { name, iconUrl, parentId } = req.body;
+        const { name, iconUrl, imageUrl, parentId } = req.body;
         const category = await Category.findByPk(req.params.id);
         if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
 
@@ -110,13 +122,24 @@ const updateCategory = async (req, res) => {
         const previousData = { name: category.name, iconUrl: category.iconUrl, parentId: category.parentId };
 
         const updates = {};
-        if (name) {
-            updates.name = name;
-            let newSlug = generateSlug(name);
+        if (name && name.trim() !== category.name) {
+            const trimmedName = name.trim();
+            const nameExists = await Category.findOne({
+                where: { name: trimmedName },
+            });
+            if (nameExists) {
+                return res.status(400).json({ success: false, message: 'A category with this name already exists' });
+            }
+
+            updates.name = trimmedName;
+            let newSlug = generateSlug(trimmedName);
             const existing = await Category.findOne({ where: { slug: newSlug, id: { [Op.ne]: req.params.id } } });
             updates.slug = existing ? `${newSlug}-${Date.now()}` : newSlug;
         }
-        if (iconUrl !== undefined) updates.iconUrl = iconUrl || null;
+
+        const finalIconUrl = iconUrl !== undefined ? (iconUrl || null) : (imageUrl !== undefined ? (imageUrl || null) : undefined);
+        if (finalIconUrl !== undefined) updates.iconUrl = finalIconUrl;
+        
         if (parentId !== undefined) updates.parentId = parentId || null;
 
         await category.update(updates);
@@ -139,6 +162,15 @@ const deleteCategory = async (req, res) => {
     try {
         const category = await Category.findByPk(req.params.id);
         if (!category) return res.status(404).json({ success: false, message: 'Category not found' });
+
+        // Guard: Prevent deletion if products are assigned to this category
+        const productCount = await Product.count({ where: { categoryId: req.params.id } });
+        if (productCount > 0) {
+            return res.status(400).json({
+                success: false,
+                message: `Cannot delete category. ${productCount} product(s) are assigned to it.`
+            });
+        }
 
         // Reassign children to grandparent (or null) before deleting
         await Category.update(

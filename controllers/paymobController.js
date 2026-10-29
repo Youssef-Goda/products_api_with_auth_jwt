@@ -33,6 +33,7 @@ const { createIntention } = require('../services/paymobService');
 const { Op }              = require('sequelize');
 const Product             = require('../models/Product');
 const sequelize           = require('../config/database');
+const { reduceStockForOrder } = require('../services/stockService');
 
 // ── Supabase admin client (bypass RLS) ───────────────────────────────────────
 const supabase = createClient(
@@ -127,116 +128,10 @@ async function calcAmountCentsFromOrder(orderId) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
-// reduceStockForOrder
-//
-// Atomically decrements countInStock for every item in the given order.
-// Uses a Sequelize transaction so ALL decrements commit together or ALL
-// roll back — no partial stock reduction is possible.
-//
-// Each individual decrement uses a conditional UPDATE:
-//   UPDATE "Products"
-//   SET    "countInStock" = "countInStock" - qty
-//   WHERE  id = productId
-//     AND  "countInStock" >= qty
-//
-// If the WHERE condition is not met (stock insufficient or product missing),
-// 0 rows are affected → an error is thrown → the full Sequelize transaction
-// rolls back, restoring all previously decremented products to their original
-// counts.
-//
-// Returns: { success: true }  |  { success: false, error: string }
-//
-// TRANSACTION BOUNDARY NOTE:
-//   This Sequelize transaction covers ONLY the Products table.
-//   The orders.stock_status update (Supabase PostgREST HTTP) is a separate
-//   operation — the two cannot share a single ACID transaction because they
-//   use different connection pools.  The stock_status state machine (pending
-//   → processing → done/failed) bridges this architectural gap and makes the
-//   overall operation safe and retryable.
 // ══════════════════════════════════════════════════════════════════════════════
-async function reduceStockForOrder(orderId) {
-  // 1. Fetch order items from Supabase
-  const { data: items, error: itemsErr } = await supabase
-    .from('order_items')
-    .select('product_id, product_name, quantity')
-    .eq('order_id', orderId);
-
-  if (itemsErr) {
-    return { success: false, error: `Failed to fetch order items: ${itemsErr.message}` };
-  }
-  if (!items || items.length === 0) {
-    return { success: false, error: `No order items found for order ${orderId}` };
-  }
-
-  console.log(
-    `📦 [reduceStockForOrder] Processing ${items.length} item(s) for order ${orderId}`
-  );
-
-  // 2. Validate all quantities before entering the transaction
-  for (const item of items) {
-    const qty = parseInt(item.quantity, 10);
-    if (!Number.isInteger(qty) || qty < 1) {
-      return {
-        success: false,
-        error: `Invalid quantity for product ${item.product_id}: "${item.quantity}"`,
-      };
-    }
-  }
-
-  // 3. Sequelize transaction: atomic conditional decrement for every product
-  const t = await sequelize.transaction();
-  try {
-    for (const item of items) {
-      const qty       = parseInt(item.quantity, 10);
-      const productId = item.product_id;
-      const name      = item.product_name ?? productId;
-
-      // Atomic conditional decrement:
-      //   SET countInStock = countInStock - qty  WHERE countInStock >= qty
-      // affectedCount === 0  →  stock insufficient or product not found
-      // affectedCount === 1  →  success
-      const [affectedCount] = await Product.update(
-        { countInStock: sequelize.literal(`"countInStock" - ${qty}`) },
-        {
-          where: {
-            id:           productId,
-            countInStock: { [Op.gte]: qty },
-          },
-          transaction: t,
-        }
-      );
-
-      if (affectedCount !== 1) {
-        throw new Error(
-          `Insufficient stock for product "${name}" (id=${productId}): ` +
-          `need ${qty} unit(s) but available stock is less than that, ` +
-          `or product does not exist.`
-        );
-      }
-
-      console.log(
-        `✅ [reduceStockForOrder] Product "${name}" (${productId}) − ${qty} unit(s)`
-      );
-    }
-
-    await t.commit();
-    console.log(
-      `✅ [reduceStockForOrder] All ${items.length} product(s) decremented for order ${orderId}`
-    );
-    return { success: true };
-
-  } catch (txErr) {
-    try { await t.rollback(); } catch (rbErr) {
-      console.error(
-        `❌ [reduceStockForOrder] Rollback also failed for order ${orderId}: ${rbErr.message}`
-      );
-    }
-    console.error(
-      `❌ [reduceStockForOrder] Transaction rolled back for order ${orderId}: ${txErr.message}`
-    );
-    return { success: false, error: txErr.message };
-  }
-}
+// reduceStockForOrder — moved to services/stockService.js
+// Imported above: const { reduceStockForOrder } = require('../services/stockService');
+// ══════════════════════════════════════════════════════════════════════════════
 
 // ══════════════════════════════════════════════════════════════════════════════
 // POST /api/v1/payments/paymob/initiate

@@ -162,7 +162,19 @@ router.put('/profile', authenticateToken, async (req, res) => {
     if (firstName !== undefined) allowedUpdates.firstName = firstName;
     if (lastName !== undefined) allowedUpdates.lastName = lastName;
     if (phoneNumber !== undefined) allowedUpdates.phoneNumber = phoneNumber;
-    if (birthDate !== undefined) allowedUpdates.birthDate = birthDate;
+    if (birthDate !== undefined) {
+      // Birth date is immutable once set — server-side enforcement.
+      // user.birthDate is already loaded above via User.findByPk.
+      if (user.birthDate) {
+        // Already set — reject any change (even if the value is the same)
+        return res.status(409).json({
+          success: false,
+          message: 'Birth date cannot be changed once it has been set.',
+        });
+      }
+      // Not set yet — allow setting it for the first time
+      if (birthDate) allowedUpdates.birthDate = birthDate;
+    }
     if (gender !== undefined) {
       const validGenders = ['male', 'female', 'other'];
       if (!validGenders.includes(gender)) {

@@ -12,7 +12,8 @@ const {
 
 // ── Admin-only guard middleware ──
 const adminOnly = (req, res, next) => {
-    if (req.user?.role !== 'admin') {
+    const allowedRoles = ['admin', 'super_admin', 'owner'];
+    if (!allowedRoles.includes(req.user?.role)) {
         return res.status(403).json({ success: false, message: 'Admin access required' });
     }
     next();

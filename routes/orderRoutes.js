@@ -27,6 +27,7 @@ const { notifyOrderStatusChanged } = require('../services/orderNotificationServi
 const { createClient } = require('@supabase/supabase-js');
 const { logActivity } = require('../services/activityLogger');
 const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
+const { reduceStockForOrder, restoreStockForOrder } = require('../services/stockService');
 
 // ── Supabase admin client (bypass RLS for server-side ops) ──────────────────
 const supabase = createClient(
@@ -196,7 +197,39 @@ router.post('/', authenticateToken, async (req, res) => {
     if (itemsErr) throw itemsErr;
     console.log(`✅ [Orders] ${itemsPayload.length} order_items inserted`);
 
-    // 3️⃣  Clear cart immediately only for Cash on Delivery (COD) orders
+    // 3️⃣  For COD orders: atomically reduce stock BEFORE clearing cart.
+    //     If any item has insufficient stock, compensate by deleting the order
+    //     and items, then reject with a 400 naming the product.
+    //     Paymob orders skip this block — stock is reduced by the webhook.
+    if (payment_method === 'cod') {
+      const stockResult = await reduceStockForOrder(orderId);
+      if (!stockResult.success) {
+        // Compensation: delete items then order (best-effort; errors are logged but not surfaced)
+        const { error: delItemsErr } = await supabase
+          .from('order_items')
+          .delete()
+          .eq('order_id', orderId);
+        if (delItemsErr) {
+          console.error(`❌ [Orders] Compensation delete order_items failed for ${orderId}: ${delItemsErr.message}`);
+        }
+        const { error: delOrderErr } = await supabase
+          .from('orders')
+          .delete()
+          .eq('id', orderId);
+        if (delOrderErr) {
+          console.error(`❌ [Orders] Compensation delete order failed for ${orderId}: ${delOrderErr.message}`);
+        }
+        return res.status(400).json({
+          success: false,
+          message: stockResult.error || 'Insufficient stock. Order was not placed.',
+        });
+      }
+      // Mark stock as reduced (terminal state for COD — no state-machine needed)
+      await supabase.from('orders').update({ stock_status: 'done' }).eq('id', orderId);
+      console.log(`✅ [Orders] Stock reduced and marked done for COD order ${orderId}`);
+    }
+
+    // 4️⃣  Clear cart immediately only for Cash on Delivery (COD) orders
     // For online Paymob orders, cart is preserved until payment is confirmed by webhook
     if (payment_method === 'cod') {
       const { error: cartErr } = await supabase
@@ -210,7 +243,7 @@ router.post('/', authenticateToken, async (req, res) => {
       }
     }
 
-    // 4️⃣  Fetch full order (with items + address) to return
+    // 5️⃣  Fetch full order (with items + address) to return
     const { data: fullOrder, error: fetchErr } = await supabase
       .from('orders')
       .select('*, order_items(*), shipping_addresses(*)')
@@ -512,10 +545,10 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
   }
 
   try {
-    // Fetch the order first to get the owner's user_id
+    // Fetch the order first to get the owner's user_id and current stock_status
     const { data: order, error: fetchError } = await supabase
       .from('orders')
-      .select('id, user_id, status')
+      .select('id, user_id, status, stock_status')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -527,6 +560,19 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
       return res.json({ success: true, message: 'Status unchanged', data: order });
     }
 
+    // ── Terminal-state guard ───────────────────────────────────────────────
+    // Once an order is cancelled or refunded its stock has been restored
+    // (stock_status = 'restored'). Re-activating it would leave stock
+    // permanently under-counted. Forbid ANY transition out of these states.
+    const TERMINAL_CANCEL_STATUSES = ['cancelled', 'refunded'];
+    if (TERMINAL_CANCEL_STATUSES.includes(order.status)) {
+      return res.status(409).json({
+        success: false,
+        message: `Order is already "${order.status}" and cannot be moved to "${status}". ` +
+                 'Once an order is cancelled or refunded, its status cannot be changed.',
+      });
+    }
+
     // Update the order status
     const { data: updated, error: updateError } = await supabase
       .from('orders')
@@ -536,6 +582,23 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
       .single();
 
     if (updateError) throw updateError;
+
+    // Idempotent stock restore — only when transitioning to cancelled or refunded,
+    // and only if stock was actually reduced for this order (stock_status = 'done').
+    const terminalCancelStatuses = ['cancelled', 'refunded'];
+    if (terminalCancelStatuses.includes(status) && order.stock_status === 'done') {
+      const restoreResult = await restoreStockForOrder(req.params.id);
+      if (restoreResult.success) {
+        await supabase
+          .from('orders')
+          .update({ stock_status: 'restored' })
+          .eq('id', req.params.id);
+        console.log(`✅ [Orders] Stock restored for ${status} order ${req.params.id}`);
+      } else {
+        // Non-fatal: log but do not fail the status update response
+        console.error(`⚠️ [Orders] Stock restore failed for order ${req.params.id}: ${restoreResult.error}`);
+      }
+    }
 
     // Log activity
     await logActivity(req.user.id, 'UPDATE_ORDER_STATUS', 'order', req.params.id, {
@@ -565,10 +628,10 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
   if (!userId) return;
 
   try {
-    // 1️⃣ Fetch the order to verify ownership and status
+    // 1️⃣ Fetch the order to verify ownership, status, and current stock_status
     const { data: order, error: fetchErr } = await supabase
       .from('orders')
-      .select('id, user_id, status')
+      .select('id, user_id, status, stock_status')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -597,6 +660,21 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
       .single();
 
     if (updateErr) throw updateErr;
+
+    // 3️⃣ Idempotent stock restore — only if stock was actually reduced for this order
+    if (order.stock_status === 'done') {
+      const restoreResult = await restoreStockForOrder(req.params.id);
+      if (restoreResult.success) {
+        await supabase
+          .from('orders')
+          .update({ stock_status: 'restored' })
+          .eq('id', req.params.id);
+        console.log(`✅ [Orders] Stock restored for cancelled order ${req.params.id}`);
+      } else {
+        // Non-fatal: log but do not fail the cancel response
+        console.error(`⚠️ [Orders] Stock restore failed for order ${req.params.id}: ${restoreResult.error}`);
+      }
+    }
 
     // Log activity
     await logActivity(userId, 'CANCEL_ORDER', 'order', req.params.id, {
