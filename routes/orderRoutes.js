@@ -464,13 +464,16 @@ router.get('/all', authenticateToken, checkRole(['admin', 'super_admin', 'owner'
 
 
 // ══════════════════════════════════════════════════════════════════════════════
-// GET /api/orders/:id  — Get a single order by ID
+// GET /api/orders/:id  — Get a single order by ID (with items + address)
 // ══════════════════════════════════════════════════════════════════════════════
 router.get('/:id', authenticateToken, async (req, res) => {
   try {
+    // Join order_items and shipping_addresses so the Flutter OrderDetailScreen
+    // receives a fully-populated order in one request — same shape as the
+    // POST /orders response and the GET /orders list response.
     const { data, error } = await supabase
       .from('orders')
-      .select('*')
+      .select('*, order_items(*), shipping_addresses(*)')
       .eq('id', req.params.id)
       .maybeSingle();
 
