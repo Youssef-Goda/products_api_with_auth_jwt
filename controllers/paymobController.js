@@ -911,17 +911,28 @@ async function handleCallback(req, res) {
   //   3. order_id          — Some Paymob integration variants send it as order_id.
   //   4. DB lookup by Paymob numeric order ID — last resort.
   //   5. DB lookup by txn_id — waits 1.5s for webhook to sync, then recovers it.
-  let orderId = special_reference || merchant_order_id || order_id || '';
+  // Paymob can use `order_id` for its own numeric order record on some
+  // integrations. Only forward a UUID as our internal order identifier.
+  // Prefer fields we explicitly populated with our UUID, then resolve Paymob
+  // references server-side below.
+  const isInternalOrderId = (value) =>
+    typeof value === 'string' &&
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+  const internalReference = [special_reference, merchant_order_id, order_id]
+    .find(isInternalOrderId);
+  let orderId = internalReference || '';
 
-  if (!orderId && paymobNumericOrderId) {
+  const paymobOrderReference = paymobNumericOrderId ||
+    (!isInternalOrderId(order_id) ? order_id : '');
+  if (!orderId && paymobOrderReference) {
     console.warn(
-      `⚠️ [paymobCallback] merchant_order_id missing — attempting DB lookup by paymob numeric order id: ${paymobNumericOrderId}`
+      `⚠️ [paymobCallback] merchant_order_id missing — attempting DB lookup by Paymob order reference.`
     );
     try {
       const { data: orderRow } = await supabase
         .from('orders')
         .select('id')
-        .eq('paymob_order_id', paymobNumericOrderId)
+        .eq('paymob_order_id', paymobOrderReference)
         .maybeSingle();
       if (orderRow?.id) {
         orderId = orderRow.id;
@@ -929,6 +940,22 @@ async function handleCallback(req, res) {
       }
     } catch (lookupErr) {
       console.warn(`⚠️ [paymobCallback] DB lookup for paymob_order_id failed: ${lookupErr.message}`);
+    }
+  }
+
+  // Some Paymob redirects return the numeric transaction as `id` while
+  // omitting both merchant_order_id and `order`. Resolve it to the internal
+  // UUID from the transaction mapping written by the verified webhook.
+  if (!orderId && txnId) {
+    try {
+      const { data: orderRow } = await supabase
+        .from('orders')
+        .select('id')
+        .eq('paymob_transaction_id', txnId)
+        .maybeSingle();
+      if (orderRow?.id) orderId = orderRow.id;
+    } catch (lookupErr) {
+      console.warn(`⚠️ [paymobCallback] Transaction lookup failed: ${lookupErr.message}`);
     }
   }
 
