@@ -526,7 +526,8 @@ async function handleWebhook(req, res) {
         paymob_transaction_id: paymobTransactionId || null,
         updated_at:            new Date().toISOString(),
       })
-      .eq('id', internalOrderId);
+      .eq('id', internalOrderId)
+      .in('payment_status', ['pending', 'initiated']);
     await logActivity(null, 'PAYMENT_AMOUNT_MISMATCH', 'order', internalOrderId, {
       reported_amount_cents: amountCentsReported,
       expected_amount_cents: expectedAmountCents,
