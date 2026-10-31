@@ -11,7 +11,11 @@ const authenticateToken = (req, res, next) => {
             if (err.name === 'TokenExpiredError') {
                 return res.status(401).json({ success: false, message: 'Session expired' });
             }
-            return res.status(403).json({ success: false, message: 'Forbidden' });
+            // A bad/malformed/incorrect-signature access token is an
+            // authentication failure. Keep 403 for authenticated users who
+            // lack permission so clients do not mistake authorization for a
+            // broken session.
+            return res.status(401).json({ success: false, message: 'Invalid token' });
         }
         req.user = user;
         next();

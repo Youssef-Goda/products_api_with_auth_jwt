@@ -4,8 +4,40 @@ const sequelize = require('../config/database');
 const User = require('../models/User');
 const PendingUser = require('../models/PendingUser');
 const { generateAccessToken, generateRefreshToken } = require('../utils/generateTokens');
+const jwt = require('jsonwebtoken');
 const { sendOTP, sendNewLoginEmail } = require('../utils/otpHelper');
 const router = express.Router();
+
+// Refresh the custom JWT session. The refresh token must still be the exact
+// token persisted on the user's row, which also makes logout/re-login revoke it.
+router.post('/refresh', async (req, res) => {
+    const { refreshToken } = req.body || {};
+    if (typeof refreshToken !== 'string' || !refreshToken.trim()) {
+        return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+    }
+
+    try {
+        const secret = process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET || 'Dealio_Refresh_Key_2026_Kernel';
+        const decoded = jwt.verify(refreshToken, secret);
+        const user = await User.findOne({ where: { id: decoded.id, refreshToken } });
+        if (!user || user.isActive === false) {
+            return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+        }
+
+        const accessToken = generateAccessToken(user);
+        const rotatedRefreshToken = generateRefreshToken(user);
+        user.refreshToken = rotatedRefreshToken;
+        await user.save();
+
+        return res.json({ success: true, accessToken, refreshToken: rotatedRefreshToken });
+    } catch (err) {
+        if (err.name === 'TokenExpiredError' || err.name === 'JsonWebTokenError' || err.name === 'NotBeforeError') {
+            return res.status(401).json({ success: false, message: 'Invalid refresh token' });
+        }
+        console.error('Refresh token error:', err.message);
+        return res.status(500).json({ success: false, message: 'Could not refresh session' });
+    }
+});
 
 // 1. ========================= Register =========================
 router.post('/register', async (req, res) => {
