@@ -972,27 +972,28 @@ async function handleCallback(req, res) {
 
 
 
-  const isSuccess = String(success).toLowerCase() === 'true';
-
   console.log(
     `📲 [paymobCallback] Received — success=${success} pending=${pending} ` +
     `orderId=${orderId} txnId=${txnId}`
   );
 
-  // If payment explicitly failed or cancelled, mark pending_payment order as cancelled
-  const isFailed = !isSuccess && (pending === 'false' || pending === false);
-  if (orderId && isFailed) {
-    try {
-      await supabase
-        .from('orders')
-        .update({ status: 'cancelled', payment_status: 'failed', updated_at: new Date().toISOString() })
-        .eq('id', orderId)
-        .in('status', ['pending_payment', 'pending']);
-      console.log(`ℹ️ [paymobCallback] Marked order ${orderId} as cancelled (payment failed/abandoned)`);
-    } catch (err) {
-      console.warn(`⚠️ [paymobCallback] Could not mark order ${orderId} as cancelled: ${err.message}`);
-    }
-  }
+  // ── NO database writes here ────────────────────────────────────────────────
+  // This is an unverified browser redirect — the customer's browser hit this
+  // URL after the payment iframe closed.  Paymob does NOT sign these query
+  // params with HMAC before sending them, so they cannot be trusted as proof
+  // of payment success or failure.
+  //
+  // The authoritative payment result comes exclusively from the HMAC-verified
+  // server-to-server POST /webhook.  Any write here risks:
+  //   • A spoofed ?success=false request permanently cancelling a paid order.
+  //   • A race condition where the callback fires before the webhook, setting
+  //     payment_status='failed', which then causes the legitimate webhook to
+  //     match 0 rows in its .in('payment_status',['pending','initiated'])
+  //     guard — leaving the order stuck as failed even after payment succeeds.
+  //
+  // The Flutter UI polls GET /api/orders/:id/payment-status (populated only by
+  // the verified webhook) to determine the real outcome.  This redirect just
+  // brings the browser back to that polling screen.
 
   // ── Resolve the frontend base URL — never hardcode a port ─────────────────
   let frontendBase = '';
