@@ -19,6 +19,8 @@ const Product = sequelize.define('Product', {
     name: { type: DataTypes.STRING, allowNull: false },
     description: { type: DataTypes.TEXT },
     price: { type: DataTypes.FLOAT, allowNull: false },
+    // Nullable by design: legacy products have unknown cost, not zero cost.
+    costPrice: { type: DataTypes.DECIMAL(12, 2), allowNull: true, field: 'costPrice' },
     imageUrls: {
         type: DataTypes.JSONB,
         defaultValue: [],

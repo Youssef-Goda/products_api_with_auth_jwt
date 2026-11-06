@@ -28,6 +28,10 @@ const { createClient } = require('@supabase/supabase-js');
 const { logActivity } = require('../services/activityLogger');
 const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
 const { reduceStockForOrder, restoreStockForOrder } = require('../services/stockService');
+const Product = require('../models/Product');
+const { hideInternalOrderCosts } = require('../services/internalFinance');
+const sequelize = require('../config/database');
+const { createOrderWithItems } = require('../services/orderCreationService');
 
 // ── Supabase admin client (bypass RLS for server-side ops) ──────────────────
 const supabase = createClient(
@@ -129,72 +133,66 @@ router.post('/', authenticateToken, async (req, res) => {
       }
     }
 
-    // 1️⃣  Insert the order row: 'pending' for COD, 'pending_payment' for online payments
+    // Persist the order and its server-priced cost snapshots atomically.
     const initialStatus = payment_method === 'cod' ? 'pending' : 'pending_payment';
-    let orderRow;
-    try {
-      const { data, error: orderErr } = await supabase
-        .from('orders')
-        .insert({
-          user_id: userId,
-          shipping_address_id,
-          payment_method,
-          status: initialStatus,
-          payment_status: 'pending',
-          subtotal,
-          tax,
-          total,
-          notes: notes || null,
-        })
-        .select()
-        .single();
+    const { orderRow, itemsPayload } = await createOrderWithItems({
+      sequelize,
+      Product,
+      initialStatus,
+      items,
+      orderData: {
+        user_id: userId,
+        shipping_address_id,
+        payment_method,
+        payment_status: 'pending',
+        subtotal,
+        tax,
+        total,
+        notes: notes || null,
+      },
+      insertOrder: async ({ transaction, initialStatus: status, orderData }) => {
+        const insertForStatus = async (targetStatus) => {
+          const values = { ...orderData, status: targetStatus };
+          const columns = Object.keys(values).filter((column) => values[column] !== undefined);
+          const [rows] = await sequelize.query(
+            `INSERT INTO public.orders (${columns.map((column) => `"${column}"`).join(', ')})
+             VALUES (${columns.map((column) => `:${column}`).join(', ')})
+             RETURNING *`,
+            { transaction, replacements: values },
+          );
+          return rows?.[0];
+        };
 
-      if (orderErr) throw orderErr;
-      orderRow = data;
-    } catch (insertErr) {
-      // If DB has a constraint on status 'pending_payment', fall back to status 'pending'
-      if (initialStatus === 'pending_payment') {
-        console.warn(`⚠️ [Orders] DB constraint on status '${initialStatus}': ${insertErr.message} — falling back to status='pending'`);
-        const { data: fbData, error: fbErr } = await supabase
-          .from('orders')
-          .insert({
-            user_id: userId,
-            shipping_address_id,
-            payment_method,
-            status: 'pending',
-            payment_status: 'pending',
-            subtotal,
-            tax,
-            total,
-            notes: notes || null,
-          })
-          .select()
-          .single();
-
-        if (fbErr) throw fbErr;
-        orderRow = fbData;
-      } else {
-        throw insertErr;
-      }
-    }
+        // Keep the existing online-payment status fallback without aborting the transaction.
+        await sequelize.query('SAVEPOINT dealio_order_status', { transaction });
+        try {
+          const created = await insertForStatus(status);
+          await sequelize.query('RELEASE SAVEPOINT dealio_order_status', { transaction });
+          return created;
+        } catch (insertError) {
+          if (status !== 'pending_payment') throw insertError;
+          await sequelize.query('ROLLBACK TO SAVEPOINT dealio_order_status', { transaction });
+          console.warn(`⚠️ [Orders] DB constraint on status 'pending_payment': ${insertError.message} — falling back to status='pending'`);
+          const created = await insertForStatus('pending');
+          await sequelize.query('RELEASE SAVEPOINT dealio_order_status', { transaction });
+          return created;
+        }
+      },
+      insertItems: async ({ transaction, items: rows }) => {
+        for (const item of rows) {
+          const columns = Object.keys(item).filter((column) => item[column] !== undefined);
+          await sequelize.query(
+            `INSERT INTO public.order_items (${columns.map((column) => `"${column}"`).join(', ')})
+             VALUES (${columns.map((column) => `:${column}`).join(', ')})`,
+            { transaction, replacements: item },
+          );
+        }
+      },
+    });
 
     const orderId = orderRow.id;
     console.log(`✅ [Orders] Order row created: ${orderId} (status=${orderRow.status})`);
 
-    // 2️⃣  Bulk-insert order_items
-    const itemsPayload = items.map((item) => ({
-      order_id: orderId,
-      product_id: item.product_id,
-      product_name: item.product_name,
-      product_code: item.product_code ?? null,
-      image_url: item.image_url ?? null,
-      unit_price: item.unit_price,
-      quantity: item.quantity,
-      subtotal: item.subtotal,
-    }));
-
-    const { error: itemsErr } = await supabase.from('order_items').insert(itemsPayload);
-    if (itemsErr) throw itemsErr;
     console.log(`✅ [Orders] ${itemsPayload.length} order_items inserted`);
 
     // 3️⃣  For COD orders: atomically reduce stock BEFORE clearing cart.
@@ -265,7 +263,7 @@ router.post('/', authenticateToken, async (req, res) => {
         if (userRow?.email) {
           const emailSent = await sendOrderConfirmationEmail(
             userRow.email,
-            fullOrder,
+            hideInternalOrderCosts(fullOrder),
             userRow.firstName || 'Customer',
           );
           if (emailSent) {
@@ -280,7 +278,7 @@ router.post('/', authenticateToken, async (req, res) => {
       }
     }
 
-    return res.status(201).json({ success: true, data: fullOrder });
+    return res.status(201).json({ success: true, data: hideInternalOrderCosts(fullOrder) });
   } catch (err) {
     console.error('❌ [Orders] POST / Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });
@@ -302,7 +300,7 @@ router.get('/', authenticateToken, async (req, res) => {
       .order('created_at', { ascending: false });
 
     if (error) throw error;
-    return res.json({ success: true, data });
+    return res.json({ success: true, data: hideInternalOrderCosts(data) });
   } catch (err) {
     console.error('❌ Fetch Orders Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });
@@ -445,7 +443,7 @@ router.get('/all', authenticateToken, checkRole(['admin', 'super_admin', 'owner'
 
     return res.json({
       success:      true,
-      data:         pageRows,
+      data:         hideInternalOrderCosts(pageRows),
       total_count:  filteredCount,
       page,
       limit,
@@ -488,7 +486,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
     }
 
-    return res.json({ success: true, data });
+    return res.json({ success: true, data: hideInternalOrderCosts(data) });
   } catch (err) {
     console.error('❌ Fetch Order Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });
@@ -616,7 +614,7 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
       console.error('⚠️ Notification fire-and-forget error:', e.message)
     );
 
-    return res.json({ success: true, message: `Order status updated to "${status}"`, data: updated });
+    return res.json({ success: true, message: `Order status updated to "${status}"`, data: hideInternalOrderCosts(updated) });
   } catch (err) {
     console.error('❌ Update Order Status Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });
@@ -686,7 +684,7 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
     });
 
     console.log(`✅ Order ${order.id} was cancelled by user.`);
-    return res.json({ success: true, message: 'Order cancelled successfully', data: updated });
+    return res.json({ success: true, message: 'Order cancelled successfully', data: hideInternalOrderCosts(updated) });
   } catch (err) {
     console.error('❌ Cancel Order Error:', err.message);
     return res.status(500).json({ success: false, message: err.message });

@@ -29,6 +29,7 @@ const crypto    = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const { logActivity }  = require('../services/activityLogger');
 const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
+const { hideInternalOrderCosts } = require('../services/internalFinance');
 const { createIntention } = require('../services/paymobService');
 const { Op }              = require('sequelize');
 const Product             = require('../models/Product');
@@ -696,7 +697,7 @@ async function handleWebhook(req, res) {
         .maybeSingle();
 
       if (userRow?.email && fullOrder) {
-        sendOrderConfirmationEmail(userRow.email, fullOrder, userRow.firstName || 'Customer')
+        sendOrderConfirmationEmail(userRow.email, hideInternalOrderCosts(fullOrder), userRow.firstName || 'Customer')
           .then(() =>
             console.log(`📧 [paymobWebhook] Confirmation email sent to ${userRow.email}`)
           )
