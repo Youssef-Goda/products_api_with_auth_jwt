@@ -31,9 +31,10 @@ const { logActivity }  = require('../services/activityLogger');
 const { sendOrderConfirmationEmail } = require('../utils/otpHelper');
 const { hideInternalOrderCosts } = require('../services/internalFinance');
 const { createIntention } = require('../services/paymobService');
+const sequelize = require('../config/database');
+const { transitionOrderReservations } = require('../services/promotionRedemptionService');
 const { Op }              = require('sequelize');
 const Product             = require('../models/Product');
-const sequelize           = require('../config/database');
 const { reduceStockForOrder } = require('../services/stockService');
 
 // ── Supabase admin client (bypass RLS) ───────────────────────────────────────
@@ -189,26 +190,49 @@ async function initiatePayment(req, res) {
     }
 
     // ── 1. Verify order exists and belongs to this user ──────────────────────
-    const { data: order, error: orderErr } = await supabase
-      .from('orders')
-      .select('id, user_id, status, payment_status')
-      .eq('id', order_id)
-      .maybeSingle();
-
-    if (orderErr) {
-      return res.status(500).json({
-        success: false,
-        message: `Payment initialization failed: DB error fetching order — ${orderErr.message}`,
+    const requestKey = String(req.get?.('Idempotency-Key') || req.body.idempotency_key || `${order_id}:${method}`).trim().slice(0, 120);
+    const attemptState = await sequelize.transaction(async (transaction) => {
+      const { QueryTypes } = require('sequelize');
+      const order = (await sequelize.query('SELECT id,user_id,status,payment_status,payment_method,total,applied_promotion_ids FROM public.orders WHERE id=:id FOR UPDATE', {
+        type: QueryTypes.SELECT, transaction, replacements: { id: order_id },
+      }))[0];
+      if (!order) return { error: { status: 404, message: 'Order not found.' } };
+      if (String(order.user_id) !== String(userId)) return { error: { status: 403, message: 'Access denied to this order.' } };
+      if (!['card','wallet','cash'].includes(String(order.payment_method || '').toLowerCase()) || String(order.payment_method).toLowerCase() !== method) {
+        return { error: { status: 409, message: 'This order is not payable with the selected online payment method.' } };
+      }
+      if (['cancelled','refunded','expired'].includes(String(order.status).toLowerCase())) return { error: { status: 409, message: 'This order is no longer payable.' } };
+      if (!['pending','initiated'].includes(String(order.payment_status).toLowerCase())) return { error: { status: 409, message: 'This order is not awaiting payment.' } };
+      const amount = Number(order.total);
+      if (!Number.isFinite(amount) || amount <= 0) return { error: { status: 409, message: 'This order has no valid payable amount.' } };
+      const active = (await sequelize.query("SELECT * FROM public.paymob_payment_attempts WHERE order_id=:orderId AND status IN ('initializing','initiated','reconciliation_required') FOR UPDATE", {
+        type: QueryTypes.SELECT, transaction, replacements: { orderId: order_id },
+      }))[0];
+      if (active) {
+        if (active.status === 'initiated' && active.client_secret && Number(active.amount_cents) === Math.round(amount * 100)) {
+          return { attempt: active, replay: true, order };
+        }
+        return { error: { status: 409, message: 'A payment attempt is already active for this order. Please resume it or contact support.' } };
+      }
+      if (order.payment_status === 'initiated') return { error: { status: 409, message: 'The existing payment attempt must be reconciled before another attempt.' } };
+      const attemptId = require('crypto').randomUUID();
+      const created = (await sequelize.query(`INSERT INTO public.paymob_payment_attempts(id,order_id,user_id,request_key,status,payment_method,amount_cents)
+        VALUES(:id,:orderId,:userId,:requestKey,'initializing',:method,:amount) RETURNING *`, {
+        type: QueryTypes.SELECT, transaction, replacements: { id: attemptId, orderId: order_id, userId, requestKey, method, amount: Math.round(amount * 100) },
+      }))[0];
+      return { attempt: created, replay: false, order };
+    });
+    if (attemptState.error) return res.status(attemptState.error.status).json({ success:false,message:attemptState.error.message });
+    const order = attemptState.order;
+    const attempt = attemptState.attempt;
+    if (attemptState.replay) return res.status(200).json({ success:true,payment_type:method,client_secret:attempt.client_secret,public_key:cleanEnv(process.env.PAYMOB_PUBLIC_KEY),idempotentReplay:true });
+    if (Array.isArray(order.applied_promotion_ids) && order.applied_promotion_ids.length) {
+      await sequelize.transaction(async(transaction)=>{
+        const expired=await sequelize.query("UPDATE promotion_redemptions SET status='expired',updated_at=now() WHERE order_id=:orderId AND status='reserved' AND expires_at IS NOT NULL AND expires_at<=now() RETURNING promotion_id,customer_id,discount_amount",{type:require('sequelize').QueryTypes.SELECT,transaction,replacements:{orderId:order_id}});
+        for(const reservation of expired)await sequelize.query("INSERT INTO promotion_audit_logs(promotion_id,actor_id,action,details) VALUES(:promotionId,:actorId,'redemption_expired',CAST(:details AS jsonb))",{transaction,replacements:{promotionId:reservation.promotion_id,actorId:reservation.customer_id,details:JSON.stringify({orderId:order_id,discountAmount:reservation.discount_amount,reason:'payment_initiation_after_expiry'})}});
       });
-    }
-    if (!order) {
-      return res.status(404).json({ success: false, message: 'Order not found.' });
-    }
-    if (order.user_id !== userId) {
-      return res.status(403).json({ success: false, message: 'Access denied to this order.' });
-    }
-    if (order.payment_status === 'paid') {
-      return res.status(409).json({ success: false, message: 'This order has already been paid.' });
+      const reservations=await sequelize.query("SELECT count(*)::int AS count FROM promotion_redemptions WHERE order_id=:orderId AND status='reserved' AND (expires_at IS NULL OR expires_at>now())",{type:require('sequelize').QueryTypes.SELECT,replacements:{orderId:order_id}});
+      if(reservations[0]?.count!==order.applied_promotion_ids.length)return res.status(409).json({success:false,code:'PROMOTION_RESERVATION_EXPIRED',message:'The promotion reservation expired. Please return to checkout and place the order again.'});
     }
 
     // ── 2. Fetch user billing data ────────────────────────────────────────────
@@ -242,7 +266,7 @@ async function initiatePayment(req, res) {
     } catch (calcErr) {
       return res.status(500).json({
         success: false,
-        message: `Payment initialization failed: could not read order total — ${calcErr.message}`,
+      message: 'Payment initialization failed: could not read a valid order total.',
       });
     }
 
@@ -275,7 +299,7 @@ async function initiatePayment(req, res) {
       'EGP', 
       [integrationId], 
       billingData, 
-      { merchant_order_id: order_id, special_reference: order_id } // pass order_id in extras so it comes back in webhook
+      { merchant_order_id: order_id, special_reference: attempt.id }
     );
 
     if (!intention || !intention.client_secret) {
@@ -287,10 +311,29 @@ async function initiatePayment(req, res) {
     }
 
     // Update order status in DB
-    await supabase
-      .from('orders')
-      .update({ payment_status: 'initiated', updated_at: new Date().toISOString() })
-      .eq('id', order_id);
+    const providerExpiry = intention.expires_at || intention.expiration || null;
+    const parsedProviderExpiry = providerExpiry == null ? null : new Date(typeof providerExpiry === 'number' ? (providerExpiry < 1e12 ? providerExpiry * 1000 : providerExpiry) : providerExpiry);
+    const paymentExpiresAt = parsedProviderExpiry && Number.isFinite(parsedProviderExpiry.getTime()) && parsedProviderExpiry > new Date()
+      ? parsedProviderExpiry.toISOString()
+      : new Date(Date.now() + 30 * 60 * 1000).toISOString();
+    const providerIntentionId = intention.id || intention.intention_id || null;
+    const finalized = await sequelize.transaction(async (transaction) => {
+      const { QueryTypes } = require('sequelize');
+      const latest = (await sequelize.query('SELECT status,payment_status FROM public.orders WHERE id=:id FOR UPDATE', { type:QueryTypes.SELECT,transaction,replacements:{id:order_id} }))[0];
+      if (!latest || ['cancelled','refunded','expired'].includes(String(latest.status).toLowerCase())) {
+        await sequelize.query("UPDATE public.paymob_payment_attempts SET status='reconciliation_required',provider_intention_id=:intentionId,client_secret=:clientSecret,expires_at=:expiresAt,updated_at=now() WHERE id=:id", { transaction,replacements:{id:attempt.id,intentionId:providerIntentionId,clientSecret:intention.client_secret,expiresAt:paymentExpiresAt} });
+        return false;
+      }
+      const updated = await sequelize.query("UPDATE public.orders SET payment_status='initiated',payment_expires_at=:expiresAt,updated_at=now() WHERE id=:id AND payment_status='pending' AND status NOT IN ('cancelled','refunded','expired') RETURNING id", { transaction,replacements:{id:order_id,expiresAt:paymentExpiresAt} });
+      const returned = Array.isArray(updated[0]) ? updated[0] : updated;
+      if (!returned?.length) throw new Error('Order payment state changed; reconciliation is required.');
+      await sequelize.query("UPDATE public.paymob_payment_attempts SET status='initiated',provider_intention_id=:intentionId,client_secret=:clientSecret,expires_at=:expiresAt,updated_at=now() WHERE id=:id AND status='initializing'", { transaction,replacements:{id:attempt.id,intentionId:providerIntentionId,clientSecret:intention.client_secret,expiresAt:paymentExpiresAt} });
+      return true;
+    });
+    if (!finalized) return res.status(409).json({success:false,code:'PAYMENT_RECONCILIATION_REQUIRED',message:'The order changed while payment was starting. Contact support before retrying.'});
+    await sequelize.query('UPDATE promotion_redemptions SET expires_at=:expiresAt,updated_at=now() WHERE order_id=:orderId AND status=\'reserved\'', {
+      replacements: { expiresAt: paymentExpiresAt, orderId: order_id },
+    });
 
     await logActivity(userId, 'PAYMENT_INITIATED', 'order', order_id, {
       payment_method: method,
@@ -461,12 +504,16 @@ async function handleWebhook(req, res) {
   const isSuccess           = txn?.success === true;
   const isPending           = txn?.pending === true;
   const amountCentsReported = parseInt(txn?.amount_cents ?? '0', 10);
-  const internalOrderId     = txn?.special_reference
-    ?? txn?.order?.merchant_order_id
+  const attemptReference    = txn?.special_reference ?? null;
+  let internalOrderId       = txn?.order?.merchant_order_id
     ?? txn?.payment_key_claims?.billing_data?.merchant_order_id
     ?? txn?.intention?.extras?.merchant_order_id
     ?? txn?.extras?.merchant_order_id
     ?? null;
+  if (!internalOrderId && attemptReference) {
+    const { data: attemptOrder } = await supabase.from('paymob_payment_attempts').select('order_id').eq('id',attemptReference).maybeSingle();
+    internalOrderId = attemptOrder?.order_id || attemptReference; // legacy reference was the order UUID
+  }
 
   console.log(
     `📬 [paymobWebhook] txn=${paymobTransactionId} success=${isSuccess} ` +
@@ -483,13 +530,27 @@ async function handleWebhook(req, res) {
   // and stock-status state machine in one round-trip.
   const { data: order, error: fetchErr } = await supabase
     .from('orders')
-    .select('id, subtotal, tax, total, payment_status, user_id, stock_status, stock_processing_started_at')
+    .select('id, subtotal, tax, total, payment_status, user_id, stock_status, stock_processing_started_at, status, payment_method')
     .eq('id', internalOrderId)
     .maybeSingle();
 
   if (fetchErr || !order) {
     console.error(`❌ [paymobWebhook] Order ${internalOrderId} not found in DB.`);
     return res.status(200).json({ received: true, message: 'Acknowledged (order not found).' });
+  }
+
+  // New payment intentions carry their durable attempt UUID in special_reference.
+  // Legacy in-flight intentions used the order UUID; accept that form only when
+  // the reference exactly matches the order and no durable attempt exists.
+  let paymentAttempt = null;
+  if (attemptReference && attemptReference !== internalOrderId) {
+    const { data: attempt, error: attemptError } = await supabase
+      .from('paymob_payment_attempts')
+      .select('id,order_id,status,amount_cents,payment_method,provider_transaction_id')
+      .eq('id', attemptReference).eq('order_id', internalOrderId).maybeSingle();
+    if (attemptError || !attempt) return res.status(200).json({ received:true,message:'Acknowledged (payment attempt not found).' });
+    paymentAttempt = attempt;
+    if (!['initiated','reconciliation_required'].includes(attempt.status)) return res.status(200).json({received:true,message:'Acknowledged (payment attempt is not active).'});
   }
 
   // ── 5. Amount verification ────────────────────────────────────────────────────
@@ -528,13 +589,21 @@ async function handleWebhook(req, res) {
         updated_at:            new Date().toISOString(),
       })
       .eq('id', internalOrderId)
-      .in('payment_status', ['pending', 'initiated']);
+      .in('payment_status', ['pending', 'initiated'])
+      .not('status','in','(cancelled,refunded,expired)');
+    if (paymentAttempt) await supabase.from('paymob_payment_attempts').update({status:'failed',provider_transaction_id:paymobTransactionId,provider_result:{reason:'amount_mismatch'},updated_at:new Date().toISOString()}).eq('id',paymentAttempt.id).in('status',['initiated','reconciliation_required']);
     await logActivity(null, 'PAYMENT_AMOUNT_MISMATCH', 'order', internalOrderId, {
       reported_amount_cents: amountCentsReported,
       expected_amount_cents: expectedAmountCents,
       paymob_transaction_id: paymobTransactionId,
     });
+    await transitionOrderReservations({sequelize,orderId:internalOrderId,to:'released',from:['reserved'],reason:'verified_webhook_amount_mismatch'});
     return res.status(200).json({ received: true, message: 'Acknowledged (amount mismatch).' });
+  }
+
+  // A pending Paymob event is not a failure and does not release a valid hold.
+  if (isPending && !isSuccess) {
+    return res.status(200).json({ received: true, message: 'Payment remains pending.' });
   }
 
   // ── 6. Determine final payment status ────────────────────────────────────────
@@ -543,6 +612,18 @@ async function handleWebhook(req, res) {
   //   initiatePayment only sets 'initiated'.
   const finalPaymentStatus = (isSuccess && !isPending) ? 'paid' : 'failed';
   const finalOrderStatus   = finalPaymentStatus === 'paid' ? 'confirmed' : 'cancelled';
+
+  if (paymentAttempt && Number(paymentAttempt.amount_cents) !== amountCentsReported) {
+    return res.status(200).json({received:true,message:'Acknowledged (attempt amount mismatch).'});
+  }
+
+  if (finalPaymentStatus === 'paid' && ['cancelled','refunded','expired'].includes(String(order.status).toLowerCase())) {
+    if (paymentAttempt) await supabase.from('paymob_payment_attempts').update({status:'reconciliation_required',provider_transaction_id:paymobTransactionId,provider_result:{reason:'success_after_terminal_order'},updated_at:new Date().toISOString()}).eq('id',paymentAttempt.id).in('status',['initiated','reconciliation_required']);
+    await supabase.from('orders').update({payment_status:'reconciliation_required',updated_at:new Date().toISOString()}).eq('id',internalOrderId).in('status',['cancelled','refunded','expired']).in('payment_status',['pending','initiated']);
+    await logActivity(order.user_id,'PAYMENT_REQUIRES_RECONCILIATION','order',internalOrderId,{paymob_transaction_id:paymobTransactionId,reason:'verified_success_after_terminal_order'});
+    await transitionOrderReservations({sequelize,orderId:internalOrderId,to:'released',from:['reserved'],reason:'late_payment_terminal_order'});
+    return res.status(200).json({received:true,message:'Verified payment requires manual reconciliation; terminal order was not reopened.'});
+  }
 
   // ── 7. FAILED payment: atomic idempotent update ──────────────────────────────
   if (finalPaymentStatus === 'failed') {
@@ -557,7 +638,8 @@ async function handleWebhook(req, res) {
         updated_at:            new Date().toISOString(),
       })
       .eq('id', internalOrderId)
-      .in('payment_status', ['pending', 'initiated']);
+      .in('payment_status', ['pending', 'initiated'])
+      .not('status','in','(cancelled,refunded,expired)');
 
     await logActivity(order.user_id, 'PAYMENT_FAILED', 'order', internalOrderId, {
       paymob_transaction_id: paymobTransactionId,
@@ -565,6 +647,8 @@ async function handleWebhook(req, res) {
       success:               isSuccess,
       pending:               isPending,
     });
+    if (paymentAttempt) await supabase.from('paymob_payment_attempts').update({status:'failed',provider_transaction_id:paymobTransactionId,provider_result:{reason:'verified_payment_failure'},updated_at:new Date().toISOString()}).eq('id',paymentAttempt.id).in('status',['initiated','reconciliation_required']);
+    await transitionOrderReservations({sequelize,orderId:internalOrderId,to:'released',from:['reserved'],reason:'verified_payment_failure'});
 
     console.log(`❌ [paymobWebhook] Order ${internalOrderId} → payment failed.`);
     return res.status(200).json({ received: true, message: 'Payment failed.' });
@@ -617,6 +701,7 @@ async function handleWebhook(req, res) {
       })
       .eq('id', internalOrderId)
       .in('payment_status', ['pending', 'initiated'])
+      .not('status','in','(cancelled,refunded,expired)')
       .select('id');
 
     if (claimErr) {
@@ -630,6 +715,19 @@ async function handleWebhook(req, res) {
     console.error(
       `❌ [paymobWebhook] Phase A exception for order ${internalOrderId}: ${phaseAErr.message}`
     );
+  }
+
+  if (isFirstPaymentClaim || order.payment_status === 'paid') {
+    // Only the verified, amount-matched server webhook may consume a Paymob hold.
+    // Repeating this before the stock idempotency return lets webhook retries
+    // recover redemption finalization without consuming twice.
+    try {
+      await transitionOrderReservations({sequelize,orderId:internalOrderId,to:'consumed',reason:'verified_paymob_success'});
+      if (paymentAttempt) await supabase.from('paymob_payment_attempts').update({status:'consumed',provider_transaction_id:paymobTransactionId,provider_result:{success:true},updated_at:new Date().toISOString()}).eq('id',paymentAttempt.id).in('status',['initiated','consumed']);
+    } catch (redemptionError) {
+      console.error(`❌ [paymobWebhook] Redemption finalization failed for order ${internalOrderId}: ${redemptionError.message}`);
+      return res.status(500).json({received:false,message:'Payment recorded; coupon finalization will retry.'});
+    }
   }
 
   if (!isFirstPaymentClaim) {
@@ -709,6 +807,7 @@ async function handleWebhook(req, res) {
       console.warn('⚠️ [paymobWebhook] Could not send confirmation email:', emailErr.message);
     }
   }
+
 
   // ── Phase B-1: Claim stock-processing lease (normal path) ─────────────────
   // Transitions stock_status: pending | failed → processing.

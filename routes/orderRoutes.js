@@ -32,6 +32,8 @@ const Product = require('../models/Product');
 const { hideInternalOrderCosts } = require('../services/internalFinance');
 const sequelize = require('../config/database');
 const { createOrderWithItems } = require('../services/orderCreationService');
+const { calculatePromotionCheckout } = require('../services/promotionCheckout');
+const { transitionOrderReservations } = require('../services/promotionRedemptionService');
 
 // ── Supabase admin client (bypass RLS for server-side ops) ──────────────────
 const supabase = createClient(
@@ -88,17 +90,20 @@ router.post('/', authenticateToken, async (req, res) => {
     tax,
     total,
     notes,
+    coupon_code,
   } = req.body;
+  const idempotencyKey = String(req.get('Idempotency-Key') || req.body?.idempotency_key || '').trim();
 
   // ── Validation ──────────────────────────────────────────────────────────
   if (!shipping_address_id) {
     return res.status(400).json({ success: false, message: 'shipping_address_id is required.' });
   }
-  if (!Array.isArray(items) || items.length === 0) {
-    return res.status(400).json({ success: false, message: 'items must be a non-empty array.' });
+  if (!['cod', 'card', 'wallet', 'cash'].includes(String(payment_method).toLowerCase())) {
+    return res.status(400).json({ success:false,code:'INVALID_PAYMENT_METHOD',message:'Choose a supported payment method.' });
   }
+  if (idempotencyKey.length > 100) return res.status(400).json({ success:false,code:'INVALID_IDEMPOTENCY_KEY',message:'Idempotency key is too long.' });
 
-  console.log(`📦 [Orders] POST payload: userId=${userId}, items=${items.length}, total=${total}`);
+  console.log(`📦 [Orders] POST checkout request: userId=${userId}`);
 
   try {
     // 0️⃣ Fetch user's role to determine velocity check permissions
@@ -135,7 +140,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     // Persist the order and its server-priced cost snapshots atomically.
     const initialStatus = payment_method === 'cod' ? 'pending' : 'pending_payment';
-    const { orderRow, itemsPayload } = await createOrderWithItems({
+    const { orderRow, itemsPayload, duplicate } = await createOrderWithItems({
       sequelize,
       Product,
       initialStatus,
@@ -149,6 +154,7 @@ router.post('/', authenticateToken, async (req, res) => {
         tax,
         total,
         notes: notes || null,
+      checkout_idempotency_key: idempotencyKey || null,
       },
       insertOrder: async ({ transaction, initialStatus: status, orderData }) => {
         const insertForStatus = async (targetStatus) => {
@@ -188,9 +194,26 @@ router.post('/', authenticateToken, async (req, res) => {
           );
         }
       },
+      userId,
+      idempotencyKey: idempotencyKey || null,
+      prepareOrder: ({ transaction }) => calculatePromotionCheckout({
+        sequelize,
+        Product,
+        userId,
+        couponCode: coupon_code || null,
+        transaction,
+        lockRows: true,
+        paymentMethod: payment_method,
+      }),
     });
 
     const orderId = orderRow.id;
+    if (duplicate) {
+      const { data: existingOrder, error: existingErr } = await supabase
+        .from('orders').select('*, order_items(*), shipping_addresses(*)').eq('id', orderId).single();
+      if (existingErr) throw existingErr;
+      return res.status(200).json({ success:true,data:hideInternalOrderCosts(existingOrder),idempotentReplay:true });
+    }
     console.log(`✅ [Orders] Order row created: ${orderId} (status=${orderRow.status})`);
 
     console.log(`✅ [Orders] ${itemsPayload.length} order_items inserted`);
@@ -202,6 +225,7 @@ router.post('/', authenticateToken, async (req, res) => {
     if (payment_method === 'cod') {
       const stockResult = await reduceStockForOrder(orderId);
       if (!stockResult.success) {
+        await transitionOrderReservations({sequelize,orderId,to:'released',from:['consumed','reserved'],reason:'cod_stock_failure'});
         // Compensation: delete items then order (best-effort; errors are logged but not surfaced)
         const { error: delItemsErr } = await supabase
           .from('order_items')
@@ -281,7 +305,12 @@ router.post('/', authenticateToken, async (req, res) => {
     return res.status(201).json({ success: true, data: hideInternalOrderCosts(fullOrder) });
   } catch (err) {
     console.error('❌ [Orders] POST / Error:', err.message);
-    return res.status(500).json({ success: false, message: err.message });
+    if (idempotencyKey && (err.original?.code === '23505' || err.parent?.code === '23505')) {
+      const { data: replay } = await supabase.from('orders').select('*, order_items(*), shipping_addresses(*)')
+        .eq('user_id', userId).eq('checkout_idempotency_key', idempotencyKey).maybeSingle();
+      if (replay) return res.status(200).json({success:true,data:hideInternalOrderCosts(replay),idempotentReplay:true});
+    }
+    return res.status(err.status || 500).json({ success: false, code:err.code || 'ORDER_CREATE_FAILED', message: err.message });
   }
 });
 
@@ -549,7 +578,7 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
     // Fetch the order first to get the owner's user_id and current stock_status
     const { data: order, error: fetchError } = await supabase
       .from('orders')
-      .select('id, user_id, status, stock_status')
+      .select('id, user_id, status, stock_status, payment_status')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -573,12 +602,16 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
                  'Once an order is cancelled or refunded, its status cannot be changed.',
       });
     }
+    if (status === 'cancelled' && order.payment_status === 'paid') {
+      return res.status(409).json({ success:false,code:'REFUND_REQUIRED',message:'This order has been paid. Contact support to cancel it; a refund must be confirmed separately.' });
+    }
 
     // Update the order status
     const { data: updated, error: updateError } = await supabase
       .from('orders')
       .update({ status, updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
+      .eq('status', order.status)
       .select()
       .single();
 
@@ -599,6 +632,9 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
         // Non-fatal: log but do not fail the status update response
         console.error(`⚠️ [Orders] Stock restore failed for order ${req.params.id}: ${restoreResult.error}`);
       }
+    }
+    if (terminalCancelStatuses.includes(status)) {
+      await transitionOrderReservations({sequelize,orderId:req.params.id,to:'released',from:['consumed','reserved'],reason:`order_${status}`});
     }
 
     // Log activity
@@ -632,7 +668,7 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
     // 1️⃣ Fetch the order to verify ownership, status, and current stock_status
     const { data: order, error: fetchErr } = await supabase
       .from('orders')
-      .select('id, user_id, status, stock_status')
+      .select('id, user_id, status, stock_status, payment_status')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -644,6 +680,9 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
     // Check ownership (only owner of order can cancel)
     if (order.user_id !== userId) {
       return res.status(403).json({ success: false, message: 'You are not authorized to cancel this order.' });
+    }
+    if (order.payment_status === 'paid') {
+      return res.status(409).json({ success:false,code:'REFUND_REQUIRED',message:'This order has already been paid. Please contact support; cancellation requires a verified refund workflow.' });
     }
 
     // Check status — user can cancel if pending or confirmed (before processing starts)
@@ -657,6 +696,8 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
       .from('orders')
       .update({ status: 'cancelled', updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
+      .eq('status', order.status)
+      .in('payment_status', ['pending','initiated','failed'])
       .select('*, order_items(*), shipping_addresses(*)')
       .single();
 
@@ -676,6 +717,7 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
         console.error(`⚠️ [Orders] Stock restore failed for order ${req.params.id}: ${restoreResult.error}`);
       }
     }
+    await transitionOrderReservations({sequelize,orderId:req.params.id,to:'released',from:['consumed','reserved'],reason:'customer_cancelled_order'});
 
     // Log activity
     await logActivity(userId, 'CANCEL_ORDER', 'order', req.params.id, {

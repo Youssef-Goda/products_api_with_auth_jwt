@@ -22,6 +22,7 @@ const moderationRoutes   = require('./routes/moderationRoutes');
 const settingsRoutes     = require('./routes/settingsRoutes');
 const paymobRoutes       = require('./routes/paymobRoutes');
 const reviewRoutes       = require('./routes/reviewRoutes');
+const promotionRoutes    = require('./routes/promotionRoutes');
 
 const sequelize = require('./config/database');
 
@@ -139,6 +140,7 @@ app.use('/api/analytics',     analyticsRoutes);
 app.use('/api/moderation',    moderationRoutes);
 app.use('/api/settings',      settingsRoutes);
 app.use('/api/reviews',       reviewRoutes);
+app.use('/api/promotions',    promotionRoutes);
 
 // ── API v1 Aliases ────────────────────────────────────────────────────────────
 app.use('/api/v1/settings',   settingsRoutes);

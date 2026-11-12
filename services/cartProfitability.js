@@ -24,6 +24,32 @@ function toCents(value, label) {
 
 const fromCents = (cents) => cents / 100;
 
+function percentageDiscountCents(subtotalCents, percentage) {
+  if (!Number.isSafeInteger(subtotalCents) || subtotalCents < 0) throw new TypeError('Subtotal cents must be a non-negative integer.');
+  const percentageCents=toCents(percentage,'Percentage discount');
+  if(percentageCents>10000)throw new RangeError('Percentage discount cannot exceed 100%.');
+  return Number((BigInt(subtotalCents)*BigInt(percentageCents)+5000n)/10000n);
+}
+
+function allocateDiscountCents(weights, discountCents) {
+  if (!Array.isArray(weights) || !Number.isSafeInteger(discountCents) || discountCents < 0 || weights.some((weight) => !Number.isSafeInteger(weight) || weight < 0)) {
+    throw new TypeError('Discount allocation requires non-negative integer cents and weights.');
+  }
+  const totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (discountCents > totalWeight) throw new RangeError('Discount exceeds eligible item totals.');
+  if (discountCents === 0) return weights.map(() => 0);
+  const shares = weights.map((weight, index) => {
+    if (weight === 0) return { index, cents: 0, remainder: 0n };
+    const product = BigInt(discountCents) * BigInt(weight);
+    return { index, cents: Number(product / BigInt(totalWeight)), remainder: product % BigInt(totalWeight) };
+  });
+  let remaining = discountCents - shares.reduce((sum, share) => sum + share.cents, 0);
+  const order = shares.filter((share) => weights[share.index] > 0)
+    .sort((a,b) => a.remainder === b.remainder ? a.index - b.index : a.remainder > b.remainder ? -1 : 1);
+  for (let cursor=0; remaining>0; cursor++,remaining--) shares[order[cursor].index].cents++;
+  return shares.map((share) => share.cents);
+}
+
 /**
  * Calculate line-level profitability after existing item discounts and one
  * cart discount. Cart discount is shared by largest-remainder proportional
@@ -88,22 +114,8 @@ async function calculateCartProfitability({ items, cartDiscount = 0, costBasis =
   if (!Number.isSafeInteger(eligibleSubtotalCents)) throw new RangeError('Eligible cart subtotal exceeds the supported range.');
   if (cartDiscountCents > eligibleSubtotalCents) throw new RangeError('Cart discount exceeds eligible item totals.');
 
-  if (cartDiscountCents > 0) {
-    const weightsTotal = BigInt(eligibleSubtotalCents);
-    const shares = lines.map((line, index) => {
-      if (line.allocationWeight === 0) return { index, cents: 0, remainder: 0n };
-      const product = BigInt(cartDiscountCents) * BigInt(line.allocationWeight);
-      return { index, cents: Number(product / weightsTotal), remainder: product % weightsTotal };
-    });
-    let unallocated = cartDiscountCents - shares.reduce((sum, share) => sum + share.cents, 0);
-    const remainderOrder = shares
-      .filter((share) => lines[share.index].allocationWeight > 0)
-      .sort((a, b) => a.remainder === b.remainder ? a.index - b.index : a.remainder > b.remainder ? -1 : 1);
-    for (let cursor = 0; unallocated > 0; cursor++, unallocated--) {
-      shares[remainderOrder[cursor].index].cents++;
-    }
-    for (const share of shares) lines[share.index].cartDiscountCents = share.cents;
-  }
+  const shares = allocateDiscountCents(lines.map((line) => line.allocationWeight), cartDiscountCents);
+  for (const [index, share] of shares.entries()) lines[index].cartDiscountCents = share;
 
   const results = lines.map((line) => {
     const totalDiscountCents = line.productDiscountCents + line.cartDiscountCents;
@@ -170,4 +182,4 @@ async function lookupCurrentProductCosts(productIds) {
   return products.map((product) => ({ id: product.id, costPrice: product.costPrice }));
 }
 
-module.exports = { calculateCartProfitability, lookupCurrentProductCosts };
+module.exports = { calculateCartProfitability, lookupCurrentProductCosts, allocateDiscountCents, percentageDiscountCents, toCents, fromCents };

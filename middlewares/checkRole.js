@@ -29,6 +29,7 @@ const getSupabaseAdmin = () => {
 const ROLE_HIERARCHY = {
   owner:     5,
   admin:     4,
+  manager:   3.5,
   moderator: 3,
   vendor:    2,
   customer:  1,
