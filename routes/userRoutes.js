@@ -71,7 +71,7 @@ router.put('/update-role/:id', authenticateToken, checkRole(['admin', 'owner']),
     req.user.role = String(actor.role || '').toLowerCase();
     if (!['admin','owner'].includes(req.user.role)) return res.status(403).json({success:false,message:'Role management access denied.'});
     const { role } = req.body;
-    const validRoles = ['user', 'customer', 'vendor', 'moderator', 'admin', 'manager', 'owner'];
+    const validRoles = ['user', 'customer', 'vendor', 'reviewer', 'admin', 'manager', 'owner'];
     if (!role || !validRoles.includes(role)) {
       return res.status(400).json({ success: false, message: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
     }

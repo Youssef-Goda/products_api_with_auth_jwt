@@ -26,7 +26,7 @@ const supabase = createClient(
 router.get(
   '/summary',
   authenticateToken,
-  checkRole(['owner', 'admin', 'moderator']),
+  checkRole(['owner', 'admin', 'reviewer']),
   async (req, res) => {
     try {
       // ── 1. Orders needing attention (pending / processing) ──────────────────

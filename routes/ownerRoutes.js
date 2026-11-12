@@ -166,7 +166,7 @@ router.patch('/users/:id/promote', ...ownerOnly, async (req, res) => {
 
   const actor=await User.findByPk(req.user.id,{attributes:['id','role','isActive']});
   if(!actor||actor.isActive===false||String(actor.role||'').toLowerCase()!=='owner')return res.status(403).json({success:false,message:'Active Owner account required.'});
-  const validRoles = ['owner', 'manager', 'admin', 'moderator', 'vendor', 'customer', 'user'];
+  const validRoles = ['owner', 'manager', 'admin', 'reviewer', 'vendor', 'customer', 'user'];
   if (!role || !validRoles.includes(role)) {
     return res.status(400).json({ success: false, message: `Invalid role. Valid: ${validRoles.join(', ')}` });
   }

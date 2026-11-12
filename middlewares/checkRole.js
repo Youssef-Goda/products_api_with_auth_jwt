@@ -4,12 +4,12 @@
  * Role-Based Access Control (RBAC) middleware for the Dealio API.
  *
  * Five roles (ascending privilege):
- *   customer < vendor < moderator < admin < owner
+ *   customer < vendor < reviewer < admin < owner
  *
  * Usage (always chain AFTER authenticateToken):
  *   router.post('/add', authenticateToken, checkRole(['admin', 'owner']), handler);
  *   router.patch('/ban', authenticateToken, checkRole(['admin','owner']), ownerPrivilege, handler);
- *   router.get('/reports', authenticateToken, checkMinRole('moderator'), handler);
+ *   router.get('/reports', authenticateToken, checkMinRole('reviewer'), handler);
  */
 
 // ── Supabase admin client factory (lazy — created on first use) ─────────────
@@ -30,7 +30,7 @@ const ROLE_HIERARCHY = {
   owner:     5,
   admin:     4,
   manager:   3.5,
-  moderator: 3,
+  reviewer: 3,
   vendor:    2,
   customer:  1,
   user:      1, // legacy alias for customer
@@ -72,7 +72,7 @@ const checkRole = (allowedRoles) => (req, res, next) => {
  * Hierarchy-based check: user must have AT LEAST the given role level.
  * Allows the specified role AND all higher roles automatically.
  *
- * Example: checkMinRole('moderator') → allows moderator, admin, owner
+ * Example: checkMinRole('reviewer') → allows reviewer, admin, owner
  *
  * @param {string} minRole
  * @returns {import('express').RequestHandler}

@@ -12,6 +12,7 @@ const { calculatePromotionFinancials } = require('../services/promotionFinancial
 const { calculatePromotionCheckout } = require('../services/promotionCheckout');
 const { classifyPromotionFinancials, promotionFinancialFingerprint } = require('../services/promotionApprovalPolicy');
 const { promotionDto: sanitizePromotionDto } = require('../services/promotionResponsePolicy');
+const { generateCouponCode, normalizeCouponPrefix } = require('../services/couponCodeGenerator');
 
 const role = (req) => String(req.user?.role || '').toLowerCase();
 const canManage = (req) => ['owner', 'manager', 'admin'].includes(role(req));
@@ -68,9 +69,13 @@ router.post('/', async (req, res) => {
   if (!canManage(req)) return fail(res, 403, 'Only Owner, Manager, or Admin can create promotions.');
   const b = req.body || {};
   const kind = b.kind || (b.couponCode ? 'coupon' : 'automatic');
-  const code = b.couponCode == null || String(b.couponCode).trim() === '' ? null : String(b.couponCode).trim().toUpperCase();
+  const autoGenerateCode=b.autoGenerateCode===true;
+  let code = b.couponCode == null || String(b.couponCode).trim() === '' ? null : String(b.couponCode).trim().toUpperCase();
   if (!String(b.name || '').trim() || !['coupon','automatic'].includes(kind) || !['percentage','fixed'].includes(b.discountType) || !Number.isFinite(Number(b.discountValue)) || Number(b.discountValue) <= 0) return fail(res, 400, 'Name, promotion type, discount type, and positive discount value are required.');
-  if (kind === 'coupon' && (!code || !/^[A-Z0-9_-]{3,40}$/.test(code))) return fail(res, 400, 'Coupon code must contain 3–40 letters, digits, underscores, or hyphens.');
+  if(autoGenerateCode&&kind!=='coupon')return fail(res,400,'Automatic code generation is available for coupons only.');
+  let couponPrefix='';
+  if(autoGenerateCode){try{couponPrefix=normalizeCouponPrefix(b.couponPrefix||'');}catch(e){return fail(res,400,e.message);}}
+  if (kind === 'coupon' && !autoGenerateCode && (!code || !/^[A-Z0-9_-]{3,40}$/.test(code))) return fail(res, 400, 'Coupon code must contain 3–40 letters, digits, underscores, or hyphens.');
   if (b.discountType === 'percentage' && Number(b.discountValue) > 100) return fail(res, 400, 'Percentage discount cannot exceed 100%.');
   const listFields=['eligibleProductIds','eligibleCategoryIds','excludedProductIds','excludedCategoryIds','eligibleCustomerIds'];
   if(listFields.some((field)=>b[field]!=null&&(!Array.isArray(b[field])||b[field].some((id)=>typeof id!=='string'||!id.trim()))))return fail(res,400,'Product, category, and customer eligibility fields must be arrays of non-empty IDs.');
@@ -99,7 +104,12 @@ router.post('/', async (req, res) => {
     if (risk === 'unverifiable' || risk === 'manager_and_owner') status = 'pending_approval';
     else if (risk === 'owner_loss') status = 'pending_owner_approval';
     else status = b.startsAt && new Date(b.startsAt) > new Date() ? 'scheduled' : (b.activate === true ? 'active' : 'draft');
-    const result = await sequelize.transaction(async (transaction) => {
+    let result;
+    let generationAttempt=0;
+    while(true){
+      generationAttempt++;
+      if(autoGenerateCode)code=generateCouponCode({prefix:couponPrefix});
+      try{result=await sequelize.transaction(async (transaction) => {
       const rows = await sequelize.query(`INSERT INTO promotions(name,description,kind,status,discount_type,discount_value,coupon_code,starts_at,ends_at,min_order_amount,max_discount,max_uses,max_uses_per_customer,eligible_product_ids,eligible_category_ids,excluded_product_ids,excluded_category_ids,eligible_customer_ids,campaign_id,priority,allow_stacking,margin_snapshot,profit_snapshot,expected_loss,loss_making,creator_id)
         VALUES(:name,:description,:kind,:status,:discountType,:discountValue,:code,:startsAt,:endsAt,:minOrderAmount,:maxDiscount,:maxUses,:maxUsesPerCustomer,:productIds,:categoryIds,:excludedIds,:excludedCategoryIds,:customerIds,:campaignId,:priority,:allowStacking,:margin,:profit,:expectedLoss,:lossMaking,:creatorId) RETURNING *`, {
         type: QueryTypes.INSERT, transaction, replacements: {
@@ -109,10 +119,15 @@ router.post('/', async (req, res) => {
           priority: Number(b.priority || 0), allowStacking:b.allowStacking===true, margin: financial.grossMargin, profit: financial.grossProfit, expectedLoss: financial.expectedLoss || 0, lossMaking: financial.lossMaking, creatorId: req.user.id,
         },
       });
-      const row = Array.isArray(result[0]) ? result[0][0] : result[0];
+      const row = Array.isArray(rows[0]) ? rows[0][0] : rows[0];
       await audit(transaction, row.id, req.user.id, 'created', { status, financial });
       return row;
-    });
+      });break;}catch(error){
+        const collision=error.name==='SequelizeUniqueConstraintError'||/unique|duplicate key/i.test(error.message||'');
+        if(autoGenerateCode&&collision&&generationAttempt<8)continue;
+        throw error;
+      }
+    }
     res.status(201).json({ success: true, data: promotionDto({ ...result, financial, approvalsRequired: status === 'pending_owner_approval' ? ['owner'] : status === 'pending_approval' ? ['manager','owner'] : [] },req) });
     if (status === 'pending_owner_approval') await notifyRoles(['owner'], 'Promotion needs Owner approval', `${b.name} needs review. Expected gross loss: ${financial.expectedLoss}.`, { promotionId: result.id });
     else if (status === 'pending_approval') await notifyRoles(['owner','manager'], 'Promotion needs approval', `${b.name} needs financial review.`, { promotionId: result.id });

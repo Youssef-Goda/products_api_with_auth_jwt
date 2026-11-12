@@ -32,10 +32,10 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ── POST /api/banners — owner/admin/moderator only ───────────────────────────
+// ── POST /api/banners — owner/admin/reviewer only ───────────────────────────
 router.post('/', authenticateToken, async (req, res) => {
   const role = req.user?.role?.toLowerCase();
-  if (!['admin', 'moderator', 'owner'].includes(role)) {
+  if (!['admin', 'reviewer', 'owner'].includes(role)) {
     return res.status(403).json({ success: false, message: 'Forbidden' });
   }
 
@@ -78,10 +78,10 @@ router.post('/', authenticateToken, async (req, res) => {
   }
 });
 
-// ── PUT /api/banners/:id — owner/admin/moderator only ────────────────────────
+// ── PUT /api/banners/:id — owner/admin/reviewer only ────────────────────────
 router.put('/:id', authenticateToken, async (req, res) => {
   const role = req.user?.role?.toLowerCase();
-  if (!['admin', 'moderator', 'owner'].includes(role)) {
+  if (!['admin', 'reviewer', 'owner'].includes(role)) {
     return res.status(403).json({ success: false, message: 'Forbidden' });
   }
 
@@ -118,10 +118,10 @@ router.put('/:id', authenticateToken, async (req, res) => {
   }
 });
 
-// ── DELETE /api/banners/:id — owner/admin/moderator only ─────────────────────
+// ── DELETE /api/banners/:id — owner/admin/reviewer only ─────────────────────
 router.delete('/:id', authenticateToken, async (req, res) => {
   const role = req.user?.role?.toLowerCase();
-  if (!['admin', 'moderator', 'owner'].includes(role)) {
+  if (!['admin', 'reviewer', 'owner'].includes(role)) {
     return res.status(403).json({ success: false, message: 'Forbidden' });
   }
 

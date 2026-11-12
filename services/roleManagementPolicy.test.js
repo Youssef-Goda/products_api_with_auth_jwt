@@ -10,7 +10,7 @@ test('only Owner grants or revokes Owner, Manager, and Admin roles',()=>{
     assert.equal(roleChangeAllowed('owner','customer',role),true);
   }
   assert.equal(roleChangeAllowed('owner','admin','customer'),true);
-  assert.equal(roleChangeAllowed('admin','customer','moderator'),true);
+  assert.equal(roleChangeAllowed('admin','customer','reviewer'),true);
   assert.equal(roleChangeAllowed('owner','customer','root'),false);
 });
 test('Admin cannot change Owner status and users cannot deactivate themselves',()=>{

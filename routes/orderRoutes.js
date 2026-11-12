@@ -125,8 +125,8 @@ router.post('/', authenticateToken, async (req, res) => {
       : [];
     const isExistingReplay=existingForIdempotency.length>0;
     // Only regular users/customers are subject to the 3-active-order limit.
-    // Admins, owners and moderators are exempt.
-    const isPrivileged = ['admin', 'owner', 'moderator', 'super_admin'].includes(userRole);
+    // Admins, owners and reviewers are exempt.
+    const isPrivileged = ['admin', 'owner', 'reviewer', 'super_admin'].includes(userRole);
     if (!isPrivileged && !isExistingReplay) {
       // Count orders that are still "in-flight" (not yet delivered or cancelled)
       const activeStatuses = ['pending', 'confirmed', 'processing', 'shipped'];
@@ -348,7 +348,7 @@ router.get('/', authenticateToken, async (req, res) => {
 //   governorate          — exact governorate filter
 //   city                 — exact city filter
 // ══════════════════════════════════════════════════════════════════════════════
-router.get('/all', authenticateToken, checkRole(['admin', 'super_admin', 'owner', 'moderator']), async (req, res) => {
+router.get('/all', authenticateToken, checkRole(['admin', 'super_admin', 'owner', 'reviewer']), async (req, res) => {
   try {
     const page        = Math.max(1, parseInt(req.query.page)  || 1);
     const limit       = Math.max(1, parseInt(req.query.limit) || 20);
@@ -512,7 +512,7 @@ router.get('/:id', authenticateToken, async (req, res) => {
 
     // Object-Level Authorization Check (IDOR Guard)
     const userRole = (req.user?.role || '').toLowerCase();
-    const isElevated = ['admin', 'owner', 'moderator', 'super_admin'].includes(userRole);
+    const isElevated = ['admin', 'owner', 'reviewer', 'super_admin'].includes(userRole);
 
     if (data.user_id !== req.user.id && !isElevated) {
       return res.status(403).json({ success: false, message: 'Access denied to this order' });
@@ -545,7 +545,7 @@ router.get('/:id/payment-status', authenticateToken, async (req, res) => {
 
     // IDOR guard — only the order owner or an elevated role can query this
     const userRole = (req.user?.role || '').toLowerCase();
-    const isElevated = ['admin', 'owner', 'moderator', 'super_admin'].includes(userRole);
+    const isElevated = ['admin', 'owner', 'reviewer', 'super_admin'].includes(userRole);
     if (data.user_id !== req.user.id && !isElevated) {
       return res.status(403).json({ success: false, message: 'Access denied to this order.' });
     }
@@ -566,7 +566,7 @@ router.get('/:id/payment-status', authenticateToken, async (req, res) => {
 // Durable recovery hook for terminal-order restoration. The ledger in the
 // Products database makes this endpoint safe against concurrent staff retries
 // and against a process dying after the stock transaction commits.
-router.post('/:id/inventory/retry', authenticateToken, checkRole(['admin','super_admin','owner','moderator']), async(req,res)=>{
+router.post('/:id/inventory/retry', authenticateToken, checkRole(['admin','super_admin','owner','reviewer']), async(req,res)=>{
   try{
     const {data:order,error}=await supabase.from('orders').select('id,status,stock_status,payment_method,payment_status').eq('id',req.params.id).maybeSingle();
     if(error)throw error;
@@ -602,7 +602,7 @@ router.post('/:id/inventory/retry', authenticateToken, checkRole(['admin','super
 // PATCH /api/orders/:id/status  — Update order status (Admin / Super-Admin only)
 // Body: { status: string }
 // ══════════════════════════════════════════════════════════════════════════════
-router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin', 'owner', 'moderator']), async (req, res) => {
+router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin', 'owner', 'reviewer']), async (req, res) => {
   const { status } = req.body;
 
   if (!status || !VALID_STATUSES.includes(status)) {

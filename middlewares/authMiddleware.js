@@ -17,6 +17,11 @@ const authenticateToken = (req, res, next) => {
             // broken session.
             return res.status(401).json({ success: false, message: 'Invalid token' });
         }
+        // Old access tokens can outlive the role migration. Preserve the old
+        // review permissions during token expiry without accepting unknown roles.
+        if (String(user?.role || '').trim().toLowerCase() === 'moderator') {
+            user.role = 'reviewer';
+        }
         req.user = user;
         next();
     });

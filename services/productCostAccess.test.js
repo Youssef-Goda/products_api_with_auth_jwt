@@ -7,7 +7,7 @@ const { canManageProductCost, serializePublicProduct, serializeInternalProduct }
 test('only the existing owner role can view or update cost', () => {
   assert.equal(canManageProductCost('owner'), true);
   assert.equal(canManageProductCost('admin'), false);
-  assert.equal(canManageProductCost('moderator'), false);
+  assert.equal(canManageProductCost('reviewer'), false);
   assert.equal(canManageProductCost('customer'), false);
 });
 

@@ -1,7 +1,7 @@
 'use strict';
 
 const PRIVILEGED_ROLES = new Set(['owner','manager','admin']);
-const SUPPORTED_ROLES = new Set(['user','customer','vendor','moderator','admin','manager','owner']);
+const SUPPORTED_ROLES = new Set(['user','customer','vendor','reviewer','admin','manager','owner']);
 
 function roleChangeAllowed(actorRole, targetRole, nextRole) {
   const actor=String(actorRole||'').toLowerCase();
