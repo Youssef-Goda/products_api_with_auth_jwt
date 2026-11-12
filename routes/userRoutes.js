@@ -10,6 +10,7 @@ const { authenticateToken } = require('../middlewares/authMiddleware');
 const { checkRole, ownerPrivilege } = require('../middlewares/checkRole');
 const { sendOTP } = require('../utils/otpHelper');
 const { logActivity } = require('../services/activityLogger');
+const { roleChangeAllowed, accountStatusChangeAllowed } = require('../services/roleManagementPolicy');
 
 // ── Multer: memory storage (no disk writes) ─────────────────────────────────
 const _upload = multer({
@@ -75,25 +76,11 @@ router.put('/update-role/:id', authenticateToken, checkRole(['admin', 'owner']),
       return res.status(400).json({ success: false, message: `Invalid role. Must be one of: ${validRoles.join(', ')}` });
     }
 
-    // Privileged staff roles are granted only by the Owner.
-    if (['owner', 'manager', 'admin'].includes(role) && req.user.role !== 'owner') {
-      return res.status(403).json({ success: false, message: 'Only the Owner can grant administrative roles.' });
-    }
     const targetUser = await User.findByPk(req.params.id);
     if (!targetUser) {
       return res.status(404).json({ success: false, message: 'User not found.' });
     }
-    if (targetUser.role === 'manager' && req.user.role !== 'owner') {
-      return res.status(403).json({ success: false, message: 'Only the Owner can change a Manager account.' });
-    }
-
-    // Peer-admin protection: admins cannot modify another admin's role
-    if (req.user.role === 'admin') {
-      const targetRole = (targetUser.role || '').toLowerCase();
-      if (targetRole === 'admin' || targetRole === 'owner') {
-        return res.status(403).json({ success: false, message: 'Admins cannot modify the role of another Admin or Owner.' });
-      }
-    }
+    if (!roleChangeAllowed(req.user.role,targetUser.role,role)) return res.status(403).json({success:false,message:'Only the Owner can grant or change Owner, Manager, or Admin roles.'});
 
     const oldRole = targetUser.role;
     await User.update({ role }, { where: { id: req.params.id } });
@@ -120,15 +107,10 @@ router.put('/toggle-status/:id', authenticateToken, checkRole(['admin', 'super_a
     req.user.role = String(actor.role || '').toLowerCase();
     if (!['admin','owner','super_admin'].includes(req.user.role)) return res.status(403).json({success:false,message:'Account status management access denied.'});
     const { isActive } = req.body;
-    if (typeof isActive !== 'boolean') return res.status(400).json({ success: false, message: 'isActive must be a boolean.' });
     const targetUser = await User.findByPk(req.params.id);
     if (!targetUser) return res.status(404).json({ success: false, message: 'User not found' });
-    if (targetUser.id === req.user.id && isActive === false) {
-      return res.status(409).json({ success: false, message: 'You cannot deactivate your own account.' });
-    }
-    if ((targetUser.role || '').toLowerCase() === 'owner' && (req.user.role || '').toLowerCase() !== 'owner') {
-      return res.status(403).json({ success: false, message: 'Only the Owner can change an Owner account status.' });
-    }
+    if (typeof isActive !== 'boolean') return res.status(400).json({ success: false, message: 'isActive must be a boolean.' });
+    if (!accountStatusChangeAllowed(req.user.id,req.user.role,targetUser.id,targetUser.role,isActive)) return res.status(403).json({success:false,message:'You are not allowed to change this account status.'});
 
     await User.update({ isActive }, { where: { id: req.params.id } });
 

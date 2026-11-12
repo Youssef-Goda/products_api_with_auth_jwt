@@ -22,7 +22,10 @@ async function calculatePromotionFinancials({ promotion, products, threshold = 2
   const items = eligible.map((p) => ({ productId: String(p.id), quantity: 1, unitPrice: p.price, productDiscount: 0 }));
   const subtotalCents = items.reduce((sum, item) => sum + Math.round(Number(item.unitPrice) * 100), 0);
   const discountCents = discountForPromotion(promotion, subtotalCents);
-  const result = await calculateCartProfitability({ items, cartDiscount: discountCents / 100, ...(costLookup ? { costLookup } : {}) });
+  // `products` are fetched by the authorized backend caller for this calculation;
+  // use those same trusted rows instead of issuing an implicit second DB query.
+  const trustedCostLookup=costLookup||(async(ids)=>ids.map((id)=>products.find((product)=>String(product.id).toLowerCase()===String(id).toLowerCase())).filter(Boolean).map((product)=>({id:product.id,costPrice:product.costPrice})));
+  const result = await calculateCartProfitability({ items, cartDiscount: discountCents / 100, costLookup:trustedCostLookup });
   const known = result.items.every((line) => line.unitCost != null && line.grossProfit != null);
   const effectiveRevenue = result.items.reduce((sum, line) => sum + line.effectiveSubtotal, 0);
   const grossProfit = known ? result.items.reduce((sum, line) => sum + line.grossProfit, 0) : null;

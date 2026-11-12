@@ -164,10 +164,13 @@ router.patch('/users/:id/promote', ...ownerOnly, async (req, res) => {
   const { id }   = req.params;
   const { role } = req.body;
 
-  const validRoles = ['owner', 'admin', 'moderator', 'vendor', 'customer'];
+  const actor=await User.findByPk(req.user.id,{attributes:['id','role','isActive']});
+  if(!actor||actor.isActive===false||String(actor.role||'').toLowerCase()!=='owner')return res.status(403).json({success:false,message:'Active Owner account required.'});
+  const validRoles = ['owner', 'manager', 'admin', 'moderator', 'vendor', 'customer', 'user'];
   if (!role || !validRoles.includes(role)) {
     return res.status(400).json({ success: false, message: `Invalid role. Valid: ${validRoles.join(', ')}` });
   }
+  if(String(id)===String(actor.id)&&role!=='owner')return res.status(409).json({success:false,message:'The Owner cannot remove Owner access from their own account.'});
 
   try {
     const { data, error } = await supabaseAdmin

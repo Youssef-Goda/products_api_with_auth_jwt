@@ -2,6 +2,8 @@
 
 const { QueryTypes } = require('sequelize');
 const { calculateCartProfitability, allocateDiscountCents, percentageDiscountCents, toCents, fromCents } = require('./cartProfitability');
+const { classifyPromotionFinancials, promotionFinancialFingerprint } = require('./promotionApprovalPolicy');
+const { calculatePromotionFinancials } = require('./promotionFinancials');
 
 const TAX_RATE_BPS = 1000; // Existing Dealio checkout tax: 10%.
 const error = (code, message, status = 400) => Object.assign(new Error(message), { code, status });
@@ -146,16 +148,25 @@ async function calculatePromotionCheckout({sequelize,Product,userId,couponCode=n
     for(const offer of appliedPromotions){
       if(!['active','scheduled'].includes(offer.status)||offer.ends_at&&new Date(offer.ends_at)<=new Date())throw error('PROMOTION_UNAVAILABLE','Promotion is no longer available.',409);
       if(offer.settings_version==null)throw error('PROMOTION_REQUIRES_APPROVAL','Promotion approval version is unavailable.',409);
-      const approvals=await sequelize.query('SELECT reviewer_id,reviewer_role,decision,acknowledged_loss,reason FROM promotion_approvals WHERE promotion_id=:id AND settings_version=:version',{type:QueryTypes.SELECT,transaction,replacements:{id:offer.id,version:offer.settings_version}});
-      approvalsByPromotion.set(String(offer.id),approvals);
-      const lossRequired=itemLosses.length>0||offer.loss_making===true||Number(offer.margin_snapshot)<0||overallMargin<0;
-      const lowMargin=overallMargin!=null&&overallMargin<currentThreshold;
+      const catalog=await Product.findAll({attributes:['id','price','costPrice','categoryId'],transaction});
+      const currentFinancial=await calculatePromotionFinancials({promotion:offer,products:catalog,threshold:currentThreshold});
+      const risk=classifyPromotionFinancials(currentFinancial,currentThreshold);
+      const fingerprint=promotionFinancialFingerprint(offer,catalog,currentThreshold);
+      if(risk==='unverifiable')throw error('PROFITABILITY_UNVERIFIED','Promotion profitability cannot be verified with current product costs.',409);
+      const approvals=await sequelize.query('SELECT reviewer_id,reviewer_role,decision,acknowledged_loss,reason,financial_snapshot FROM promotion_approvals WHERE promotion_id=:id AND settings_version=:version',{type:QueryTypes.SELECT,transaction,replacements:{id:offer.id,version:offer.settings_version}});
+      const matching=approvals.filter(a=>a.decision==='approved'&&a.financial_snapshot?.financialFingerprint===fingerprint);
+      approvalsByPromotion.set(String(offer.id),matching);
+      const lossRequired=itemLosses.length>0||risk==='owner_loss'||overallMargin<0;
+      const lowMargin=risk==='manager_and_owner'||(overallMargin!=null&&overallMargin<currentThreshold);
       if(lossRequired){
-        const ownerApproval=approvals.find((a)=>a.reviewer_role==='owner'&&a.decision==='approved'&&a.acknowledged_loss===true&&String(a.reason||'').trim());
+        const ownerApproval=matching.find((a)=>a.reviewer_role==='owner'&&a.acknowledged_loss===true&&String(a.reason||'').trim());
         if(!ownerApproval)throw error('PROMOTION_REQUIRES_APPROVAL','Promotion requires explicit Owner approval for the expected product loss.',409);
+        const cartLoss= itemLosses.reduce((sum,item)=>sum+Math.max(0,-Number(item.grossProfit||0)),0);
+        const approvedLoss=Number(ownerApproval.financial_snapshot?.expectedLoss||0);
+        if(cartLoss>approvedLoss+0.01)throw error('PROMOTION_REQUIRES_APPROVAL','Current cart loss exceeds the Owner-approved financial exposure.',409);
       }else if(lowMargin){
-        const ownerApproval=approvals.find((a)=>a.reviewer_role==='owner'&&a.decision==='approved');
-        const managerApproval=approvals.find((a)=>a.reviewer_role==='manager'&&a.decision==='approved');
+        const ownerApproval=matching.find((a)=>a.reviewer_role==='owner');
+        const managerApproval=matching.find((a)=>a.reviewer_role==='manager');
         if(!ownerApproval||!managerApproval||String(ownerApproval.reviewer_id)===String(managerApproval.reviewer_id))throw error('PROMOTION_REQUIRES_APPROVAL','Promotion requires approval from both a Manager and the Owner.',409);
       }
     }

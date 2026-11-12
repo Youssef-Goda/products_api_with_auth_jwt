@@ -21,6 +21,7 @@
 
 const express = require('express');
 const router = express.Router();
+const { QueryTypes } = require('sequelize');
 const { authenticateToken } = require('../middlewares/authMiddleware');
 const { checkRole } = require('../middlewares/checkRole');
 const { notifyOrderStatusChanged } = require('../services/orderNotificationService');
@@ -34,6 +35,8 @@ const sequelize = require('../config/database');
 const { createOrderWithItems } = require('../services/orderCreationService');
 const { calculatePromotionCheckout } = require('../services/promotionCheckout');
 const { transitionOrderReservations } = require('../services/promotionRedemptionService');
+const { cancellationBlock, customerCancellationBlock } = require('../services/orderPaymentPolicy');
+const { orderStatusTransitionBlock } = require('../services/orderStatusPolicy');
 
 // ── Supabase admin client (bypass RLS for server-side ops) ──────────────────
 const supabase = createClient(
@@ -101,6 +104,7 @@ router.post('/', authenticateToken, async (req, res) => {
   if (!['cod', 'card', 'wallet', 'cash'].includes(String(payment_method).toLowerCase())) {
     return res.status(400).json({ success:false,code:'INVALID_PAYMENT_METHOD',message:'Choose a supported payment method.' });
   }
+  const normalizedPaymentMethod=String(payment_method).toLowerCase();
   if (idempotencyKey.length > 100) return res.status(400).json({ success:false,code:'INVALID_IDEMPOTENCY_KEY',message:'Idempotency key is too long.' });
 
   console.log(`📦 [Orders] POST checkout request: userId=${userId}`);
@@ -116,10 +120,14 @@ router.post('/', authenticateToken, async (req, res) => {
     if (userErr) throw userErr;
 
     const userRole = (userRow?.role || '').toLowerCase();
+    const existingForIdempotency = idempotencyKey
+      ? await sequelize.query('SELECT id FROM public.orders WHERE user_id=:userId AND checkout_idempotency_key=:key LIMIT 1', {type:QueryTypes.SELECT,replacements:{userId,idempotencyKey}})
+      : [];
+    const isExistingReplay=existingForIdempotency.length>0;
     // Only regular users/customers are subject to the 3-active-order limit.
     // Admins, owners and moderators are exempt.
     const isPrivileged = ['admin', 'owner', 'moderator', 'super_admin'].includes(userRole);
-    if (!isPrivileged) {
+    if (!isPrivileged && !isExistingReplay) {
       // Count orders that are still "in-flight" (not yet delivered or cancelled)
       const activeStatuses = ['pending', 'confirmed', 'processing', 'shipped'];
       const { data: activeOrders, error: activeErr } = await supabase
@@ -139,7 +147,7 @@ router.post('/', authenticateToken, async (req, res) => {
     }
 
     // Persist the order and its server-priced cost snapshots atomically.
-    const initialStatus = payment_method === 'cod' ? 'pending' : 'pending_payment';
+    const initialStatus = normalizedPaymentMethod === 'cod' ? 'pending' : 'pending_payment';
     const { orderRow, itemsPayload, duplicate } = await createOrderWithItems({
       sequelize,
       Product,
@@ -148,8 +156,9 @@ router.post('/', authenticateToken, async (req, res) => {
       orderData: {
         user_id: userId,
         shipping_address_id,
-        payment_method,
+        payment_method: normalizedPaymentMethod,
         payment_status: 'pending',
+        stock_status: normalizedPaymentMethod === 'cod' ? 'pending' : null,
         subtotal,
         tax,
         total,
@@ -203,7 +212,7 @@ router.post('/', authenticateToken, async (req, res) => {
         couponCode: coupon_code || null,
         transaction,
         lockRows: true,
-        paymentMethod: payment_method,
+        paymentMethod: normalizedPaymentMethod,
       }),
     });
 
@@ -212,48 +221,42 @@ router.post('/', authenticateToken, async (req, res) => {
       const { data: existingOrder, error: existingErr } = await supabase
         .from('orders').select('*, order_items(*), shipping_addresses(*)').eq('id', orderId).single();
       if (existingErr) throw existingErr;
+      if (String(existingOrder.payment_method).toLowerCase() === 'cod' && existingOrder.stock_status !== 'done') {
+        const claim = await supabase.from('orders').update({stock_status:'processing',stock_processing_started_at:new Date().toISOString()})
+          .eq('id',orderId).in('stock_status',['pending','failed','processing']).select('id');
+        if (claim.error) throw claim.error;
+        const recovery = await reduceStockForOrder(orderId);
+        if (!recovery.success) {
+          await supabase.from('orders').update({stock_status:'failed',stock_processing_started_at:null}).eq('id',orderId).eq('stock_status','processing');
+          return res.status(409).json({success:false,code:'INVENTORY_PENDING',message:'Order saved, but inventory is not confirmed yet. Retry this checkout request later.',inventoryStatus:'failed',orderId});
+        }
+        const finalized = await supabase.from('orders').update({stock_status:'done',stock_processing_started_at:null}).eq('id',orderId).eq('stock_status','processing');
+        if (finalized.error) return res.status(202).json({success:true,code:'INVENTORY_FINALIZATION_PENDING',message:'Order is saved; inventory processing is being reconciled.',inventoryStatus:'processing',data:hideInternalOrderCosts(existingOrder),idempotentReplay:true});
+        existingOrder.stock_status='done';
+      }
       return res.status(200).json({ success:true,data:hideInternalOrderCosts(existingOrder),idempotentReplay:true });
     }
     console.log(`✅ [Orders] Order row created: ${orderId} (status=${orderRow.status})`);
 
     console.log(`✅ [Orders] ${itemsPayload.length} order_items inserted`);
 
-    // 3️⃣  For COD orders: atomically reduce stock BEFORE clearing cart.
-    //     If any item has insufficient stock, compensate by deleting the order
-    //     and items, then reject with a 400 naming the product.
-    //     Paymob orders skip this block — stock is reduced by the webhook.
-    if (payment_method === 'cod') {
+    // COD stock movements are idempotent in the Products database. The order
+    // remains discoverable if a process stops before its status is finalized.
+    if (normalizedPaymentMethod === 'cod') {
       const stockResult = await reduceStockForOrder(orderId);
       if (!stockResult.success) {
-        await transitionOrderReservations({sequelize,orderId,to:'released',from:['consumed','reserved'],reason:'cod_stock_failure'});
-        // Compensation: delete items then order (best-effort; errors are logged but not surfaced)
-        const { error: delItemsErr } = await supabase
-          .from('order_items')
-          .delete()
-          .eq('order_id', orderId);
-        if (delItemsErr) {
-          console.error(`❌ [Orders] Compensation delete order_items failed for ${orderId}: ${delItemsErr.message}`);
-        }
-        const { error: delOrderErr } = await supabase
-          .from('orders')
-          .delete()
-          .eq('id', orderId);
-        if (delOrderErr) {
-          console.error(`❌ [Orders] Compensation delete order failed for ${orderId}: ${delOrderErr.message}`);
-        }
-        return res.status(400).json({
-          success: false,
-          message: stockResult.error || 'Insufficient stock. Order was not placed.',
-        });
+        await supabase.from('orders').update({stock_status:'failed',stock_processing_started_at:null}).eq('id',orderId);
+        return res.status(409).json({success:false,code:'INVENTORY_PENDING',message:stockResult.error||'Order was saved but stock is insufficient; retry after inventory is corrected.',inventoryStatus:'failed',orderId});
       }
       // Mark stock as reduced (terminal state for COD — no state-machine needed)
-      await supabase.from('orders').update({ stock_status: 'done' }).eq('id', orderId);
+      const finalized = await supabase.from('orders').update({ stock_status: 'done',stock_processing_started_at:null }).eq('id', orderId).eq('stock_status','pending');
+      if(finalized.error)return res.status(202).json({success:true,code:'INVENTORY_FINALIZATION_PENDING',message:'Order is saved; inventory processing is being reconciled.',inventoryStatus:'processing',orderId});
       console.log(`✅ [Orders] Stock reduced and marked done for COD order ${orderId}`);
     }
 
     // 4️⃣  Clear cart immediately only for Cash on Delivery (COD) orders
     // For online Paymob orders, cart is preserved until payment is confirmed by webhook
-    if (payment_method === 'cod') {
+    if (normalizedPaymentMethod === 'cod') {
       const { error: cartErr } = await supabase
         .from('cart_items')
         .delete()
@@ -276,7 +279,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     // For COD orders, send order confirmation email immediately.
     // Paymob orders are handled by the webhook in paymobController.js (avoids duplicates).
-    if (payment_method === 'cod') {
+    if (normalizedPaymentMethod === 'cod') {
       try {
         const { data: userRow } = await supabase
           .from('users')
@@ -560,6 +563,41 @@ router.get('/:id/payment-status', authenticateToken, async (req, res) => {
   }
 });
 
+// Durable recovery hook for terminal-order restoration. The ledger in the
+// Products database makes this endpoint safe against concurrent staff retries
+// and against a process dying after the stock transaction commits.
+router.post('/:id/inventory/retry', authenticateToken, checkRole(['admin','super_admin','owner','moderator']), async(req,res)=>{
+  try{
+    const {data:order,error}=await supabase.from('orders').select('id,status,stock_status,payment_method,payment_status').eq('id',req.params.id).maybeSingle();
+    if(error)throw error;
+    if(!order)return res.status(404).json({success:false,message:'Order not found.'});
+    if(String(order.payment_method).toLowerCase()==='cod'&&order.status==='pending'){
+      if(order.stock_status==='done')return res.json({success:true,inventoryStatus:'done',idempotentReplay:true});
+      if(!['pending','processing','failed'].includes(order.stock_status))return res.status(409).json({success:false,message:'COD inventory state is not recoverable.'});
+      const {error:claimError}=await supabase.from('orders').update({stock_status:'processing',stock_processing_started_at:new Date().toISOString()})
+        .eq('id',order.id).eq('status','pending').in('stock_status',['pending','processing','failed']);
+      if(claimError)throw claimError;
+      const deduction=await reduceStockForOrder(order.id);
+      if(!deduction.success){await supabase.from('orders').update({stock_status:'failed',stock_processing_started_at:null}).eq('id',order.id).eq('stock_status','processing');return res.status(409).json({success:false,inventoryStatus:'failed',message:'COD inventory deduction remains pending and can be retried.'});}
+      const {error:doneError}=await supabase.from('orders').update({stock_status:'done',stock_processing_started_at:null}).eq('id',order.id).eq('stock_status','processing');
+      if(doneError)return res.status(202).json({success:true,inventoryStatus:'processing',message:'Stock movement is durable; order status finalization will be retried.'});
+      return res.json({success:true,inventoryStatus:'done'});
+    }
+    if(!['cancelled','refunded'].includes(order.status))return res.status(409).json({success:false,message:'Only pending COD orders or cancelled/refunded orders can reconcile inventory.'});
+    if(order.stock_status==='restored')return res.json({success:true,inventoryStatus:'restored',idempotentReplay:true});
+    if(!['done','processing','failed'].includes(order.stock_status))return res.status(409).json({success:false,message:'No completed stock deduction is available to restore.'});
+    const {data:claim,error:claimError}=await supabase.from('orders').update({stock_status:'processing',stock_processing_started_at:new Date().toISOString()})
+      .eq('id',order.id).eq('status',order.status).in('stock_status',['done','processing','failed']).select('id');
+    if(claimError)throw claimError;
+    if(!claim?.length)return res.status(409).json({success:false,message:'Inventory state changed; refresh and retry.'});
+    const result=await restoreStockForOrder(order.id);
+    if(!result.success){await supabase.from('orders').update({stock_status:'failed',stock_processing_started_at:null}).eq('id',order.id).eq('stock_status','processing');return res.status(409).json({success:false,inventoryStatus:'failed',message:'Stock restoration remains pending and can be retried.'});}
+    const {error:finalError}=await supabase.from('orders').update({stock_status:'restored',stock_processing_started_at:null}).eq('id',order.id).eq('status',order.status).eq('stock_status','processing');
+    if(finalError)return res.status(202).json({success:true,inventoryStatus:'processing',message:'Stock movement is durable; order status finalization will be retried.'});
+    return res.json({success:true,inventoryStatus:'restored'});
+  }catch(error){console.error('[Orders] inventory retry failed:',error.message);return res.status(500).json({success:false,message:'Could not reconcile inventory.'});}
+});
+
 // ══════════════════════════════════════════════════════════════════════════════
 // PATCH /api/orders/:id/status  — Update order status (Admin / Super-Admin only)
 // Body: { status: string }
@@ -578,7 +616,7 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
     // Fetch the order first to get the owner's user_id and current stock_status
     const { data: order, error: fetchError } = await supabase
       .from('orders')
-      .select('id, user_id, status, stock_status, payment_status')
+      .select('id, user_id, status, stock_status, payment_status, payment_method')
       .eq('id', req.params.id)
       .maybeSingle();
 
@@ -586,7 +624,7 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
     if (!order) return res.status(404).json({ success: false, message: 'Order not found' });
 
     // Skip update if status hasn't changed
-    if (order.status === status) {
+    if (order.status === status && !(['cancelled','refunded'].includes(order.status) && order.stock_status === 'done')) {
       return res.json({ success: true, message: 'Status unchanged', data: order });
     }
 
@@ -602,9 +640,10 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
                  'Once an order is cancelled or refunded, its status cannot be changed.',
       });
     }
-    if (status === 'cancelled' && order.payment_status === 'paid') {
-      return res.status(409).json({ success:false,code:'REFUND_REQUIRED',message:'This order has been paid. Contact support to cancel it; a refund must be confirmed separately.' });
-    }
+    const paymentBlock=cancellationBlock(order,status);
+    if(paymentBlock)return res.status(paymentBlock.status).json({success:false,code:paymentBlock.code,message:paymentBlock.message});
+    const transitionBlock=orderStatusTransitionBlock(order,status);
+    if(transitionBlock)return res.status(transitionBlock.status).json({success:false,code:transitionBlock.code,message:transitionBlock.message});
 
     // Update the order status
     const { data: updated, error: updateError } = await supabase
@@ -612,6 +651,8 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
       .update({ status, updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
       .eq('status', order.status)
+      .eq('payment_status', order.payment_status)
+      .eq('payment_method', order.payment_method)
       .select()
       .single();
 
@@ -621,16 +662,16 @@ router.patch('/:id/status', authenticateToken, checkRole(['admin', 'super_admin'
     // and only if stock was actually reduced for this order (stock_status = 'done').
     const terminalCancelStatuses = ['cancelled', 'refunded'];
     if (terminalCancelStatuses.includes(status) && order.stock_status === 'done') {
-      const restoreResult = await restoreStockForOrder(req.params.id);
-      if (restoreResult.success) {
-        await supabase
-          .from('orders')
-          .update({ stock_status: 'restored' })
-          .eq('id', req.params.id);
-        console.log(`✅ [Orders] Stock restored for ${status} order ${req.params.id}`);
-      } else {
-        // Non-fatal: log but do not fail the status update response
-        console.error(`⚠️ [Orders] Stock restore failed for order ${req.params.id}: ${restoreResult.error}`);
+      const {data:claim}=await supabase.from('orders').update({stock_status:'processing',stock_processing_started_at:new Date().toISOString()}).eq('id',req.params.id).eq('stock_status','done').in('status',['cancelled','refunded']).select('id');
+      if(claim?.length){
+        const restoreResult = await restoreStockForOrder(req.params.id);
+        if (restoreResult.success) {
+          await supabase.from('orders').update({ stock_status: 'restored',stock_processing_started_at:null }).eq('id', req.params.id).eq('stock_status','processing');
+          console.log(`✅ [Orders] Stock restored for ${status} order ${req.params.id}`);
+        } else {
+          await supabase.from('orders').update({stock_status:'done',stock_processing_started_at:null}).eq('id',req.params.id).eq('stock_status','processing');
+          console.error(`⚠️ [Orders] Stock restore failed for order ${req.params.id}: ${restoreResult.error}`);
+        }
       }
     }
     if (terminalCancelStatuses.includes(status)) {
@@ -678,18 +719,8 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
     }
 
     // Check ownership (only owner of order can cancel)
-    if (order.user_id !== userId) {
-      return res.status(403).json({ success: false, message: 'You are not authorized to cancel this order.' });
-    }
-    if (order.payment_status === 'paid') {
-      return res.status(409).json({ success:false,code:'REFUND_REQUIRED',message:'This order has already been paid. Please contact support; cancellation requires a verified refund workflow.' });
-    }
-
-    // Check status — user can cancel if pending or confirmed (before processing starts)
-    const cancellableStatuses = ['pending', 'confirmed'];
-    if (!cancellableStatuses.includes(order.status)) {
-      return res.status(400).json({ success: false, message: `Cannot cancel an order that is already "${order.status}". Only pending or confirmed orders can be cancelled.` });
-    }
+    const cancelBlock=customerCancellationBlock(order,userId);
+    if(cancelBlock)return res.status(cancelBlock.status).json({success:false,code:cancelBlock.code,message:cancelBlock.message});
 
     // 2️⃣ Update the order status to cancelled
     const { data: updated, error: updateErr } = await supabase
@@ -697,6 +728,7 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
       .update({ status: 'cancelled', updated_at: new Date().toISOString() })
       .eq('id', req.params.id)
       .eq('status', order.status)
+      .eq('payment_status', order.payment_status)
       .in('payment_status', ['pending','initiated','failed'])
       .select('*, order_items(*), shipping_addresses(*)')
       .single();
@@ -705,16 +737,14 @@ router.post('/:id/cancel', authenticateToken, async (req, res) => {
 
     // 3️⃣ Idempotent stock restore — only if stock was actually reduced for this order
     if (order.stock_status === 'done') {
-      const restoreResult = await restoreStockForOrder(req.params.id);
-      if (restoreResult.success) {
-        await supabase
-          .from('orders')
-          .update({ stock_status: 'restored' })
-          .eq('id', req.params.id);
-        console.log(`✅ [Orders] Stock restored for cancelled order ${req.params.id}`);
-      } else {
-        // Non-fatal: log but do not fail the cancel response
-        console.error(`⚠️ [Orders] Stock restore failed for order ${req.params.id}: ${restoreResult.error}`);
+      const {data:claim}=await supabase.from('orders').update({stock_status:'processing',stock_processing_started_at:new Date().toISOString()}).eq('id',req.params.id).eq('stock_status','done').eq('status','cancelled').select('id');
+      if(claim?.length){
+        const restoreResult = await restoreStockForOrder(req.params.id);
+        if(restoreResult.success) await supabase.from('orders').update({stock_status:'restored',stock_processing_started_at:null}).eq('id',req.params.id).eq('stock_status','processing');
+        else {
+          await supabase.from('orders').update({stock_status:'done',stock_processing_started_at:null}).eq('id',req.params.id).eq('stock_status','processing');
+          console.error(`⚠️ [Orders] Stock restore failed for order ${req.params.id}: ${restoreResult.error}`);
+        }
       }
     }
     await transitionOrderReservations({sequelize,orderId:req.params.id,to:'released',from:['consumed','reserved'],reason:'customer_cancelled_order'});

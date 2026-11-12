@@ -53,16 +53,16 @@ function sanitiseError(err) {
 
   if (status === 401 || status === 403) {
     const detail = data ? JSON.stringify(data) : 'Incorrect credentials';
-    return new Error(`Paymob Authentication Failed: ${detail} (HTTP ${status})`);
+    const error=new Error(`Paymob Authentication Failed: ${detail} (HTTP ${status})`); error.status=status; return error;
   }
 
   const detailMsg = data
     ? (typeof data === 'object' ? JSON.stringify(data) : String(data))
     : err.message;
 
-  return new Error(
-    `[Paymob] HTTP ${status ?? 'Network Error'}: ${detailMsg}`
-  );
+  const error=new Error(`[Paymob] HTTP ${status ?? 'Network Error'}: ${detailMsg}`);
+  if(status!=null) error.status=status;
+  return error;
 }
 
 // ══════════════════════════════════════════════════════════════════════════════

@@ -43,6 +43,14 @@ test('below-cost promotion reports loss and configured margin threshold', async 
   assert.equal(result.lossMaking, true);
 });
 
+test('a loss-making eligible product is not hidden by positive aggregate gross profit',async()=>{
+  const mixed=[{id:'loss',price:100,costPrice:101},{id:'winner',price:200,costPrice:10}];
+  const result=await calculatePromotionFinancials({promotion:{discount_type:'percentage',discount_value:10,eligible_product_ids:['loss','winner']},products:mixed});
+  assert.ok(result.grossProfit>0);
+  assert.equal(result.lossMaking,true);
+  assert.deepEqual(result.itemLosses,[{productId:'loss',grossLoss:11}]);
+});
+
 test('zero effective selling price remains an explicit loss, not an undefined safe margin', async () => {
   const free = [{ id:'free', price:0, costPrice:12, categoryId:'c' }];
   const result = await calculatePromotionFinancials({ promotion:{discount_type:'fixed',discount_value:20,eligible_product_ids:['free']},products:free,costLookup:async ids=>ids.map(id=>({id,costPrice:12})) });
