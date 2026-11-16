@@ -121,7 +121,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     const userRole = (userRow?.role || '').toLowerCase();
     const existingForIdempotency = idempotencyKey
-      ? await sequelize.query('SELECT id FROM public.orders WHERE user_id=:userId AND checkout_idempotency_key=:key LIMIT 1', {type:QueryTypes.SELECT,replacements:{userId,idempotencyKey}})
+      ? await sequelize.query('SELECT id FROM public.orders WHERE user_id=:userId AND checkout_idempotency_key=:idempotencyKey LIMIT 1', {type:QueryTypes.SELECT,replacements:{userId,idempotencyKey}})
       : [];
     const isExistingReplay=existingForIdempotency.length>0;
     // Only regular users/customers are subject to the 3-active-order limit.

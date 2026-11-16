@@ -5,6 +5,7 @@ const Module=require('node:module');
 
 function makeHarness(order,options={}){
   const calls=[];
+  const sqlCalls=[];
   const query=(table)=>{let values;return {
     select(){return this;}, update(nextValues){values=nextValues;calls.push({type:'update',table,values});return this;},
     eq(){return this;}, in(){return this;}, not(){return this;}, lt(){return this;},
@@ -25,7 +26,7 @@ function makeHarness(order,options={}){
     '../services/stockService':{reduceStockForOrder:async(id)=>{calls.push({type:'deduct',id});return {success:true};},restoreStockForOrder:async()=>({success:true})},
     '../models/Product':{},
     '../services/internalFinance':{hideInternalOrderCosts:(v)=>v},
-    '../config/database':{transaction:async(fn)=>fn({}),query:async()=>[]},
+    '../config/database':{transaction:async(fn)=>fn({}),query:async(sql,queryOptions)=>{sqlCalls.push({sql,options:queryOptions});return []; }},
     '../services/orderCreationService':{createOrderWithItems:async()=>options.creation||{}},
     '../services/promotionCheckout':{calculatePromotionCheckout:async()=>({})},
     '../services/promotionRedemptionService':{transitionOrderReservations:async()=>{}},
@@ -34,7 +35,7 @@ function makeHarness(order,options={}){
   delete require.cache[require.resolve('./orderRoutes')];
   const router=require('./orderRoutes');
   Module._load=realLoad;
-  return {router,calls};
+  return {router,calls,sqlCalls};
 }
 
 async function invoke(router,path,req){
@@ -78,4 +79,20 @@ test('actual COD idempotent replay retries missing inventory deduction',async()=
   assert.equal(res.statusCode,200);
   assert.equal(calls.some((call)=>call.type==='deduct'&&call.id==='o4'),true);
   assert.equal(res.body.data.stock_status,'done');
+});
+
+test('actual checkout route binds the idempotency key under the SQL placeholder it uses',async()=>{
+  const {router,sqlCalls}=makeHarness({id:'u1',role:'customer',status:'pending_payment'}, {
+    creation:{orderRow:{id:'order-created',status:'pending_payment'},itemsPayload:[],duplicate:false},
+  });
+  const res=await invoke(router,'/',{
+    params:{},
+    body:{shipping_address_id:'addr1',payment_method:'card',idempotency_key:'checkout-key-42',items:[]},
+    user:{id:'u1'},get:()=>null,
+  });
+  assert.equal(res.statusCode,201);
+  const lookup=sqlCalls.find((call)=>call.sql.includes('checkout_idempotency_key'));
+  assert.ok(lookup);
+  assert.match(lookup.sql, /checkout_idempotency_key=:idempotencyKey/);
+  assert.equal(lookup.options.replacements.idempotencyKey,'checkout-key-42');
 });
