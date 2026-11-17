@@ -2,6 +2,8 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const Module=require('node:module');
+const PostgresQuery=require('sequelize/lib/dialects/postgres/query');
+const {prepareValue}=require('pg/lib/utils');
 
 function makeHarness(order,options={}){
   const calls=[];
@@ -26,8 +28,23 @@ function makeHarness(order,options={}){
     '../services/stockService':{reduceStockForOrder:async(id)=>{calls.push({type:'deduct',id});return {success:true};},restoreStockForOrder:async()=>({success:true})},
     '../models/Product':{},
     '../services/internalFinance':{hideInternalOrderCosts:(v)=>v},
-    '../config/database':{transaction:async(fn)=>fn({}),query:async(sql,queryOptions)=>{sqlCalls.push({sql,options:queryOptions});return []; }},
-    '../services/orderCreationService':{createOrderWithItems:async()=>options.creation||{}},
+    '../config/database':{transaction:async(fn)=>fn({}),query:async(sql,queryOptions)=>{
+      sqlCalls.push({sql,options:queryOptions});
+      if(sql.includes('INSERT INTO public.orders'))return [[{id:'order-created',status:'pending_payment'}],{}];
+      return [];
+    }},
+    '../services/orderCreationService':{createOrderWithItems:async(args)=>{
+      if(options.exerciseOrderInserts){
+        const transaction={};
+        const orderRow=await args.insertOrder({transaction,initialStatus:args.initialStatus,orderData:{
+          ...args.orderData,applied_promotion_ids:['00000000-0000-0000-0000-000000000001'],promotion_names:['Coupon YSF15','Automatic offer'],
+        }});
+        const itemsPayload=[{order_id:orderRow.id,product_id:'product-1',applied_promotion_ids:['00000000-0000-0000-0000-000000000001'],promotion_names:['Coupon YSF15']}];
+        await args.insertItems({transaction,orderId:orderRow.id,items:itemsPayload});
+        return {orderRow,itemsPayload,duplicate:false};
+      }
+      return options.creation||{};
+    }},
     '../services/promotionCheckout':{calculatePromotionCheckout:async()=>({})},
     '../services/promotionRedemptionService':{transitionOrderReservations:async()=>{}},
   };
@@ -95,4 +112,26 @@ test('actual checkout route binds the idempotency key under the SQL placeholder 
   assert.ok(lookup);
   assert.match(lookup.sql, /checkout_idempotency_key=:idempotencyKey/);
   assert.equal(lookup.options.replacements.idempotencyKey,'checkout-key-42');
+});
+
+test('actual checkout order and item inserts bind promotion UUID/text arrays correctly',async()=>{
+  const {router,sqlCalls}=makeHarness({id:'u1',role:'customer'}, {exerciseOrderInserts:true});
+  const res=await invoke(router,'/',{
+    params:{},
+    body:{shipping_address_id:'addr1',payment_method:'card',idempotency_key:'array-checkout-key',items:[],coupon_code:'YSF15'},
+    user:{id:'u1'},get:()=>null,
+  });
+  assert.equal(res.statusCode,201);
+  const orderInsert=sqlCalls.find((call)=>call.sql.includes('INSERT INTO public.orders'));
+  const itemInsert=sqlCalls.find((call)=>call.sql.includes('INSERT INTO public.order_items'));
+  for(const insert of [orderInsert,itemInsert]){
+    assert.ok(insert);
+    assert.match(insert.sql,/CAST\(\$applied_promotion_ids AS uuid\[\]\)/);
+    assert.match(insert.sql,/CAST\(\$promotion_names AS text\[\]\)/);
+    assert.deepEqual(insert.options.bind.applied_promotion_ids,['00000000-0000-0000-0000-000000000001']);
+    const [boundSql,boundValues]=PostgresQuery.formatBindParameters(insert.sql,insert.options.bind,'postgres');
+    assert.match(boundSql,/CAST\(\$\d+ AS uuid\[\]\)/);
+    assert.ok(boundValues.some((value)=>Array.isArray(value)&&value[0]==='00000000-0000-0000-0000-000000000001'));
+    assert.equal(prepareValue(insert.options.bind.applied_promotion_ids),'{"00000000-0000-0000-0000-000000000001"}');
+  }
 });

@@ -46,6 +46,13 @@ const supabase = createClient(
 
 // ── Allowed status transitions ───────────────────────────────────────────────
 const VALID_STATUSES = ['pending', 'confirmed', 'processing', 'shipped', 'delivered', 'cancelled', 'refunded'];
+const ORDER_ARRAY_COLUMNS = Object.freeze({
+  applied_promotion_ids: 'uuid[]',
+  promotion_names: 'text[]',
+});
+const insertValueExpression = (column) => ORDER_ARRAY_COLUMNS[column]
+  ? `CAST($${column} AS ${ORDER_ARRAY_COLUMNS[column]})`
+  : `$${column}`;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // SHARED: Verify JWT user exists in public.users and return canonical UUID.
@@ -171,9 +178,9 @@ router.post('/', authenticateToken, async (req, res) => {
           const columns = Object.keys(values).filter((column) => values[column] !== undefined);
           const [rows] = await sequelize.query(
             `INSERT INTO public.orders (${columns.map((column) => `"${column}"`).join(', ')})
-             VALUES (${columns.map((column) => `:${column}`).join(', ')})
+             VALUES (${columns.map(insertValueExpression).join(', ')})
              RETURNING *`,
-            { transaction, replacements: values },
+            { transaction, bind: values },
           );
           return rows?.[0];
         };
@@ -198,8 +205,8 @@ router.post('/', authenticateToken, async (req, res) => {
           const columns = Object.keys(item).filter((column) => item[column] !== undefined);
           await sequelize.query(
             `INSERT INTO public.order_items (${columns.map((column) => `"${column}"`).join(', ')})
-             VALUES (${columns.map((column) => `:${column}`).join(', ')})`,
-            { transaction, replacements: item },
+             VALUES (${columns.map(insertValueExpression).join(', ')})`,
+            { transaction, bind: item },
           );
         }
       },
