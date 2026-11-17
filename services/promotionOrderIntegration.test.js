@@ -3,12 +3,17 @@
 const test=require('node:test');
 const assert=require('node:assert/strict');
 const {createOrderWithItems}=require('./orderCreationService');
+const {Sequelize}=require('sequelize');
+const {injectReplacements}=require('sequelize/lib/utils/sql');
+const sqlFormatter=new Sequelize('postgres://test:test@127.0.0.1:5432/test',{logging:false});
 
 function setup(paymentMethod='card'){
   const committed={orders:[],items:[],redemptions:[],audit:[]};
+  const renderedQueries=[];
   const sequelize={
     async transaction(callback){const staged={orders:[],items:[],redemptions:[],audit:[]};const result=await callback(staged);Object.assign(committed,staged);return result;},
     async query(sql,options={}){
+      if(options.replacements)renderedQueries.push(injectReplacements(sql,sqlFormatter.dialect,options.replacements));
       if(sql.includes('promotion_redemptions'))options.transaction.redemptions.push(options.replacements);
       if(sql.includes('promotion_audit_logs'))options.transaction.audit.push(options.replacements);
       return [];
@@ -16,7 +21,7 @@ function setup(paymentMethod='card'){
   };
   const Product={findAll:async()=>[{id:'product-a',costPrice:'40.00'}]};
   const prepareOrder=async()=>({items:[{productId:'product-a',productName:'Actual DB item',productCode:'A',imageUrl:null,unitPrice:100,quantity:1,originalSubtotal:100,effectiveSubtotal:90,discountAmount:10,effectiveUnitPrice:90,promotionIds:['promotion-a'],promotionNames:['Save'],costSnapshot:40}],originalSubtotal:100,subtotal:90,discountTotal:10,tax:9,total:99,couponCode:'SAVE',promotions:[{id:'promotion-a',name:'Save'}],reservations:[{promotionId:'promotion-a',discountAmount:10}]});
-  return {sequelize,Product,committed,prepareOrder,paymentMethod};
+  return {sequelize,Product,committed,prepareOrder,paymentMethod,renderedQueries};
 }
 
 async function create(f,{clientItems=[]}={}){
@@ -39,6 +44,8 @@ test('order persists only database-priced cart values and reserves Paymob coupon
   assert.equal(f.committed.items[0].subtotal,90);
   assert.equal(f.committed.items[0].unit_cost_snapshot,40);
   assert.equal(f.committed.redemptions[0].status,'reserved');
+  assert.ok(f.renderedQueries.some((sql)=>sql.includes("CASE WHEN 'reserved' = 'reserved'")));
+  assert.equal(f.renderedQueries.some((sql)=>sql.includes(':status')),false);
   assert.equal(result.orderRow.id,'order-a');
 });
 

@@ -2,10 +2,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const {Sequelize}=require('sequelize');
+const {injectReplacements}=require('sequelize/lib/utils/sql');
 const { transitionOrderReservations } = require('./promotionRedemptionService');
+const sqlFormatter=new Sequelize('postgres://test:test@127.0.0.1:5432/test',{logging:false});
 
 function fixture() {
   const committed = { reservations: [{ promotion_id: 'promotion-a', customer_id: 'customer-a', discount_amount: '10.00' }], audit: [] };
+  const renderedQueries=[];
   const sequelize = {
     async transaction(callback) {
       const staged = structuredClone(committed);
@@ -15,6 +19,7 @@ function fixture() {
       return result;
     },
     async query(sql, options) {
+      if(options.replacements)renderedQueries.push(injectReplacements(sql,sqlFormatter.dialect,options.replacements));
       if (sql.includes('UPDATE promotion_redemptions')) {
         const { orderId, from, to } = options.replacements;
         const reservation = options.transaction.staged.reservations[0];
@@ -27,7 +32,7 @@ function fixture() {
       return [];
     },
   };
-  return { sequelize, committed };
+  return { sequelize, committed, renderedQueries };
 }
 
 test('Paymob success consumes a reservation once and clears its expiry', async () => {
@@ -39,6 +44,8 @@ test('Paymob success consumes a reservation once and clears its expiry', async (
   assert.equal(f.committed.reservations[0].status, 'consumed');
   assert.equal(f.committed.reservations[0].expires_at, null);
   assert.equal(f.committed.audit.length, 1);
+  assert.ok(f.renderedQueries.some((sql)=>sql.includes("CASE WHEN 'consumed' = 'consumed'")));
+  assert.equal(f.renderedQueries.some((sql)=>sql.includes(':to')),false);
 });
 
 test('failed or cancelled payment releases a reserved coupon only once', async () => {

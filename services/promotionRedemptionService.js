@@ -6,7 +6,7 @@ async function transitionOrderReservations({ sequelize, orderId, from = ['reserv
   if (!['consumed','released','expired'].includes(to)) throw new TypeError('Invalid redemption state transition.');
   return sequelize.transaction(async (transaction) => {
     const rows = await sequelize.query(`UPDATE promotion_redemptions SET status=:to,
-      expires_at=CASE WHEN :to='consumed' THEN NULL ELSE expires_at END,updated_at=now()
+      expires_at=CASE WHEN :to = 'consumed' THEN NULL ELSE expires_at END,updated_at=now()
       WHERE order_id=:orderId AND status IN (:from) RETURNING promotion_id,customer_id,discount_amount`, {
       type: QueryTypes.SELECT, transaction, replacements: { orderId, from, to },
     });

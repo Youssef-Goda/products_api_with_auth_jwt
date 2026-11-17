@@ -80,7 +80,7 @@ async function createOrderWithItems({ sequelize, Product, orderData, initialStat
       const redemptionStatus = orderData.payment_method === 'cod' ? 'consumed' : 'reserved';
       for (const reservation of pricing.reservations) {
         await sequelize.query(`INSERT INTO promotion_redemptions(promotion_id,customer_id,order_id,status,discount_amount,expires_at)
-          VALUES(:promotionId,:customerId,:orderId,:status,:discountAmount,CASE WHEN :status='reserved' THEN now()+interval '30 minutes' ELSE NULL END)`, {
+          VALUES(:promotionId,:customerId,:orderId,:status,:discountAmount,CASE WHEN :status = 'reserved' THEN now()+interval '30 minutes' ELSE NULL END)`, {
           transaction, replacements: { promotionId: reservation.promotionId, customerId: userId, orderId: orderRow.id, status: redemptionStatus, discountAmount: reservation.discountAmount },
         });
         await sequelize.query('INSERT INTO promotion_audit_logs(promotion_id,actor_id,action,details) VALUES(:promotionId,:actorId,:action,CAST(:details AS jsonb))', {
